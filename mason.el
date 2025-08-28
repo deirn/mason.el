@@ -35,8 +35,7 @@
 (require 'yaml)
 
 (defgroup mason nil
-  "Installer for LSP servers, DAP servers, linters, and formatters.
-Based on mason.nvim.  https://github.com/mason-org/mason.nvim"
+  "Installer for LSP servers, DAP servers, linters, and formatters."
   :prefix "mason-"
   :group 'tools)
 
@@ -56,6 +55,7 @@ Based on mason.nvim.  https://github.com/mason-org/mason.nvim"
   "Directory for where package executables in."
   :type 'directory :group 'mason)
 
+;; FIXME: Auto detect?
 (defcustom mason-target nil
   "The package target architecture to install."
   :type '(choice (const "darwin_arm64")
