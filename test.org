@@ -1,0 +1,45 @@
+#+title: Test
+
+#+begin_src emacs-lisp :tangle yes
+  (mason--expand
+   "abc-{{version}}"
+   (mason--make-hash 'equal "version" "1.2.3"))
+#+end_src
+
+#+RESULTS:
+: abc-1.2.3
+
+
+#+begin_src emacs-lisp :tangle yes
+  (mason--expand
+   "abc-{{ version                       }}"
+   (mason--make-hash 'equal "version" "1.2.3"))
+#+end_src
+
+#+RESULTS:
+: abc-1.2.3
+
+
+#+begin_src emacs-lisp :tangle yes
+  (condition-case err
+      (mason--expand
+       "abc-{{ version | strip_prefix \"v\"}}"
+       (mason--make-hash 'equal "version" "v1.2.3"))
+    (error (error-message-string err)))
+#+end_src
+
+#+RESULTS:
+: Unsupported expansion ‘version | strip_prefix "v"’ in ‘abc-${ version | strip_prefix "v"}’
+
+
+#+begin_src emacs-lisp :tangle yes
+  (mason--expand
+   "{{some.nested.path}} it works"
+   (mason--make-hash 'equal
+     "some" (mason--make-hash 'equal
+             "nested" (mason--make-hash 'equal
+                       "path" "yes"))))
+#+end_src
+
+#+RESULTS:
+: yes it works

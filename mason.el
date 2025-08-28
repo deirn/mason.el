@@ -5,7 +5,7 @@
 ;; Author: Dimas Firmansyah <deirn@bai.lol>
 ;; Version: 1.0.0
 ;; Homepage: https://github.com/deirn/mason.el
-;; Package-Requires: ((emacs "30.1") (s "1.13.1") (yaml "1.2.0"))
+;; Package-Requires: ((emacs "30.1") (s "1.13.1"))
 ;; Keywords: tools lsp installer
 ;; This file is not part of GNU Emacs.
 
@@ -32,7 +32,6 @@
 (require 'cl-macs)
 (require 'seq)
 (require 's)
-(require 'yaml)
 
 (defgroup mason nil
   "Installer for LSP servers, DAP servers, linters, and formatters."
@@ -54,6 +53,16 @@
 (defcustom mason-bin-dir (expand-file-name "mason/bin" user-emacs-directory)
   "Directory for where package executables in."
   :type 'directory :group 'mason)
+
+(defcustom mason-registry-refresh-time (* 60 60 24 7)
+  "How long in seconds the before trying to refresh the registry.  Defaults to 1 week."
+  :type 'integer :group 'mason)
+
+(defcustom mason-registries
+  '(("mason" . "https://github.com/mason-org/mason-registry/releases/latest/download/registry.json.zip"))
+  "Alist of registry name and registry json archive link."
+  :type '(alist :key-type string :value-type string)
+  :group 'mason)
 
 ;; FIXME: Auto detect?
 (defcustom mason-target nil
@@ -98,6 +107,12 @@
   (apply #'mason--msg (concat "USER-ERROR: " format) args)
   (apply #'user-error format args))
 
+(defun mason--quote (str)
+  "Quote STR if it contains spaces."
+  (if (string-match-p "[[:space:]]" str)
+      (format "\"%s\"" (replace-regexp-in-string "\"" "\\\\\"" str))
+    str))
+
 (defmacro mason--process-output! ()
   "Copy output of process from BUFFER to buffer command `mason-buffer'."
   `(progn
@@ -110,12 +125,12 @@
          (indent-rigidly start (point) 8)
          (read-only-mode 1)))
      (kill-buffer buffer)
-     (unless success (error "Failed %s" msg))))
+     (unless success (error "Failed `%s'" msg))))
 
 (defun mason--process (cmd &optional callback)
   "Run process CMD asynchronously, with optional CALLBACK.
 CMD is argument list as specified in `make-process' :command."
-  (let ((msg (mapconcat #'identity cmd " "))
+  (let ((msg (mapconcat #'mason--quote cmd " "))
         (buffer (generate-new-buffer "*mason process*")))
     (mason--msg "Calling `%s'" msg)
     (with-current-buffer buffer (read-only-mode 1))
@@ -134,7 +149,7 @@ CMD is argument list as specified in `make-process' :command."
 
 (defun mason--process-sync (cmd)
   "Run CMD with ARGS synchronously."
-  (let ((msg (mapconcat #'identity cmd " "))
+  (let ((msg (mapconcat #'mason--quote cmd " "))
         (buffer (generate-new-buffer "*mason process*"))
         status success)
     (with-current-buffer buffer
@@ -193,10 +208,10 @@ CMD is argument list as specified in `make-process' :command."
 (defun mason--parse-id (id)
   "Parse a source ID."
   (if (string-match mason--id-regexp id)
-      (mason--make-hash 'eq
-        'type (match-string 1 id)
-        'package (match-string 2 id)
-        'version (match-string 3 id))
+      (mason--make-hash 'equal
+        "type" (match-string 1 id)
+        "package" (match-string 2 id)
+        "version" (match-string 3 id))
     (mason--err "Unsupported source id `%s'" id)))
 
 (defconst mason--bin-regexp
@@ -215,9 +230,9 @@ CMD is argument list as specified in `make-process' :command."
 (defun mason--parse-bin (bin)
   "Parse a BIN."
   (if (string-match mason--bin-regexp bin)
-      (mason--make-hash 'eq
-        'type (or (match-string 2 bin) "path")
-        'path (match-string 3 bin))
+      (mason--make-hash 'equal
+        "type" (or (match-string 2 bin) "path")
+        "path" (match-string 3 bin))
     (mason--err "Unsupported bin `%s'" bin)))
 
 (defun mason--expand (str spec)
@@ -230,7 +245,7 @@ CMD is argument list as specified in `make-process' :command."
                   (let ((path (split-string s "\\."))
                         (tree spec))
                     (dolist (p path)
-                      (setq tree (when tree (gethash (intern p) tree))))
+                      (setq tree (when tree (gethash p tree))))
                     (unless tree
                       (mason--err "Unable to expand `%s' in `%s' with spec `%S'" s str spec))
                     tree))))
@@ -264,7 +279,6 @@ If DEST is nil, extract into directory named same as FILE."
     (unwind-protect
         (let ((status (url-copy-file url tmp t)))
           (unless status
-            (mason--msg "Download failed: %s" url)
             (mason--err "Download failed: %s" url))
           (mason--extract tmp dest))
       (when (file-exists-p tmp) (ignore-errors (delete-file tmp))))))
@@ -330,16 +344,16 @@ Inside BODY, one can reference:
           "$"))
 
 (mason--source! github
-  (let ((asset (gethash 'asset source)))
+  (let ((asset (gethash "asset" source)))
     (unless asset (mason--err "Missing asset"))
     (when (vectorp asset)
       (unless mason-target (mason--err "Customize `mason-target' first"))
       (setq asset (seq-find (lambda (a)
-                              (string= mason-target (gethash 'target a)))
+                              (string= mason-target (gethash "target" a)))
                             asset))
       (unless asset (mason--err "No matching asset for target %s" mason-target))
-      (puthash 'asset asset source))
-    (let* ((file (gethash 'file asset))
+      (puthash "asset" asset source))
+    (let* ((file (gethash "file" asset))
            (file (mason--expand file id)))
       (unless (string-match mason--github-file-regexp file)
         (mason--err "Unsupported file asset `%s'" file))
@@ -374,71 +388,135 @@ PREFIX is where the package should've been installed."
 
 
 
-(defvar mason--ensured 0)
+(defvar mason--registry 'nan)
 (defun mason--assert-ensured ()
-  "Assert if `mason-ensured' is 1."
-  (when (= mason--ensured 0) (mason--err "Call `mason-ensure' on your init.el"))
-  (when (= mason--ensured -1) (mason--err "Mason is not ready yet")))
+  "Assert if `mason--registry' is available."
+  (when (eq mason--registry 'nan) (mason--err "Call `mason-ensure' on your init.el"))
+  (when (eq mason--registry 'on-process) (mason--err "Mason is not ready yet")))
+
+;;;###autoload
+(defun mason-update-registry ()
+  "Refresh the mason registry."
+  (interactive)
+  (setq mason--registry 'on-process)
+  (mason--async
+    (delete-directory mason-registry-dir t nil)
+    (let ((reg (mason--make-hash 'equal)))
+      (dolist (e mason-registries)
+        (let* ((name (car e))
+               (url (cdr e))
+               (dest (expand-file-name name mason-registry-dir)))
+          (mason--download-extract url dest)
+          (dolist (file (directory-files dest 'full "\\.json\\'"))
+            (mason--msg "Reading registry %s" file)
+            (with-temp-buffer
+              (insert-file-contents file)
+              (goto-char (point-min))
+              (mapc (lambda (e)
+                      (puthash "registry" name e)
+                      (puthash (gethash "name" e) e reg))
+                    (json-parse-buffer))))))
+      (with-temp-file (expand-file-name "index" mason-registry-dir)
+        (prin1 reg (current-buffer)))
+      (mason--run-at-main
+        (setq mason--registry reg)
+        (mason--msg "Mason registry updated")))))
 
 ;;;###autoload
 (defun mason-ensure ()
   "Ensure mason is setup."
   (setenv "PATH" (concat mason-bin-dir ":" (getenv "PATH")))
   (add-to-list 'exec-path mason-bin-dir)
-  (let ((dir (expand-file-name mason-registry-dir)))
-    (if (not (or (not (file-exists-p dir))
-                 (mason--dir-empty-p dir)))
-        (setq mason--ensured 1)
-      (setq mason--ensured -1)
-      (make-directory dir t)
-      (mason--process
-       (list "github" "clone" "--depth" "1" mason-registry-repo dir)
-       (lambda (&rest _)
-         (setq mason--ensured 1))))))
+  (let* ((reg-index (expand-file-name "index" mason-registry-dir))
+         (reg-time (file-attribute-modification-time (file-attributes reg-index)))
+         reg-age)
+    (if (null reg-time)
+        (mason-update-registry)
+      (setq reg-age (float-time (time-subtract (current-time) reg-time)))
+      (if (> reg-age mason-registry-refresh-time)
+          (mason-update-registry)
+        (mason--async
+          (let (reg)
+            (with-temp-buffer
+              (insert-file-contents reg-index)
+              (goto-char (point-min))
+              (setq reg (read (current-buffer))))
+            (mason--run-at-main
+              (setq mason--registry reg)
+              (mason--msg "Mason ready"))))))))
 
 (defun mason--get-package-list ()
   "Get list of mason packages."
   (mason--assert-ensured)
-  (let ((dir (expand-file-name "packages" mason-registry-dir)))
-    (directory-files dir nil directory-files-no-dot-files-regexp)))
+  (let (keys)
+    (maphash (lambda (k _v) (push k keys)) mason--registry)
+    (sort keys)))
 
 (defun mason--get-package-path (package)
   "Get PACKAGE spec path."
   (expand-file-name (concat "packages/" package "/package.yaml") mason-registry-dir))
 
+(defun mason--ask-package ()
+  "Ask for package."
+  (let* ((completion-extra-properties
+          (list
+           :affixation-function
+           (lambda (pkgs)
+             (when pkgs
+               (let* ((lens (mapcar (lambda (p) (length p)) pkgs))
+                      (margin (max (+ (apply #'max lens) 4) 20)))
+                 (mapcar
+                  (lambda (name)
+                    (let* ((len (length name))
+                           (spaces (make-string (- margin len) ?\s))
+                           (pkg (gethash name mason--registry))
+                           (desc (gethash "description" pkg))
+                           (desc (replace-regexp-in-string "\n" " " desc)))
+                      (list name nil
+                            (concat
+                             spaces
+                             (propertize desc 'face 'font-lock-doc-face))))
+                    )
+                  pkgs)))))))
+    (completing-read "Mason: " (mason--get-package-list) nil t)))
+
 ;;;###autoload
 (defun mason-spec (package)
   "Visit Mason spec file for PACKAGE."
-  (interactive (list (completing-read "Mason: " (mason--get-package-list) nil t)))
+  (interactive (list (mason--ask-package)))
   (find-file (mason--get-package-path package)))
 
 ;;;###autoload
-(defun mason-install (package)
-  "Install a Mason PACKAGE."
-  (interactive (list nil))
+(defun mason-install (package &optional force)
+  "Install a Mason PACKAGE.
+If FORCE non nil delete existing installation, if exists.
+If called interactively, ask for PACKAGE and FORCE."
+  (interactive (list nil nil))
   (let* ((interactive (null package))
-         (package (or package (completing-read "Mason: " (mason--get-package-list) nil t)))
-         (path (mason--get-package-path package))
-         (spec (mason--parse-yaml path))
-         (name (gethash 'name spec))
+         (package (or package (mason--ask-package)))
+         (spec (gethash package mason--registry))
+         (name (gethash "name" spec))
          (package-dir (expand-file-name name mason-install-dir))
          ;; source
-         (source (gethash 'source spec))
-         (source-id-raw (gethash 'id source))
+         (source (gethash "source" spec))
+         (source-id-raw (gethash "id" source))
          (source-id (mason--parse-id source-id-raw))
-         (source-supported-platforms (gethash 'supported_platforms source))
-         (source-type (gethash 'type source-id))
-         (source-package (gethash 'package source-id))
-         (source-version (gethash 'version source-id))
+         (source-supported-platforms (gethash "supported_platforms" source))
+         (source-type (gethash "type" source-id))
+         (source-package (gethash "package" source-id))
+         (source-version (gethash "version" source-id))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; bin
-         (bin (gethash 'bin spec)))
+         (bin (gethash "bin" spec)))
     (when (not (fboundp source-fn))
       (mason--err "Unsupported source type %s in id %s" source-type source-id-raw))
     (when (and (file-directory-p package-dir)
                (not (directory-empty-p package-dir)))
       (if (not interactive)
-          (mason--err "Directory %s already exists" package-dir)
+          (if force
+              (progn (mason--msg "Deleting %s" package-dir)
+                     (delete-directory package-dir t nil))
+            (mason--err "Directory %s already exists" package-dir))
         (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
             (progn (mason--msg "Deleting %s" package-dir)
                    (delete-directory package-dir t nil))
@@ -450,13 +528,13 @@ PREFIX is where the package should've been installed."
        (maphash (lambda (key val-raw)
                   (setq val-raw (mason--expand val-raw spec))
                   (let* ((val (mason--parse-bin val-raw))
-                         (bin-type (gethash 'type val))
-                         (bin-path (gethash 'path val))
+                         (bin-type (gethash "type" val))
+                         (bin-path (gethash "path" val))
                          (bin-fn (intern (concat "mason--bin-" bin-type))))
                     (when (or (null val) (not (fboundp bin-fn)))
                       (mason--err "Unsupported binary %s" val-raw))
                     (let ((bin-target (funcall bin-fn name bin-path))
-                          (bin-link (expand-file-name (symbol-name key) mason-bin-dir)))
+                          (bin-link (expand-file-name key mason-bin-dir)))
                       (make-directory mason-bin-dir t)
                       (when (file-exists-p bin-link)
                         (delete-file bin-link))
