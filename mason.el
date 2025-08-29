@@ -38,9 +38,9 @@
   :prefix "mason-"
   :group 'tools)
 
-(defcustom mason-registry-repo "https://github.com/mason-org/mason-registry.git"
-  "The mason registry repository."
-  :type 'string :group 'mason)
+(defcustom mason-dry-run nil
+  "If not nil, only print messages what mason would do."
+  :type 'boolean :group 'mason)
 
 (defcustom mason-registry-dir (expand-file-name "mason/registry" user-emacs-directory)
   "Directory for the mason registry repository."
@@ -82,25 +82,26 @@
   "Get mason buffer."
   (or (get-buffer mason-buffer)
       (with-current-buffer (get-buffer-create mason-buffer)
+        (fundamental-mode)
         (read-only-mode 1)
         (current-buffer))))
 
 (defun mason--msg (format &rest args)
   "Message with prefix.  See `message' FORMAT ARGS."
   (let ((formatted (apply #'format-message format args)))
-    (message formatted)
+    (message "%s" formatted)
     (with-current-buffer (mason-buffer)
       (read-only-mode -1)
       (goto-char (point-max))
-      (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
-              formatted
-              "\n")
+      (insert (format-time-string "[%Y-%m-%d %H:%M:%S] "))
+      (when mason-dry-run (insert "[DRY] "))
+      (insert formatted "\n")
       (read-only-mode 1))))
 
 (defun mason--err (format &rest args)
   "Call (mason--msg FORMAT ARGS) before throwing `error'."
   (apply #'mason--msg (concat "ERROR: " format) args)
-  (apply #'error format args))
+  (unless mason-dry-run (apply #'error format args)))
 
 (defun mason--uerr (format &rest args)
   "Call (mason--msg FORMAT ARGS) before throwing `user-error'."
@@ -127,12 +128,16 @@
      (kill-buffer buffer)
      (unless success (error "Failed `%s'" msg))))
 
-(defun mason--process (cmd &optional callback)
+(cl-defun mason--process (cmd &optional callback)
   "Run process CMD asynchronously, with optional CALLBACK.
 CMD is argument list as specified in `make-process' :command."
   (let ((msg (mapconcat #'mason--quote cmd " "))
-        (buffer (generate-new-buffer "*mason process*")))
+        buffer)
     (mason--msg "Calling `%s'" msg)
+    (when mason-dry-run
+      (when (functionp callback) (funcall callback))
+      (cl-return-from mason--process nil))
+    (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer (read-only-mode 1))
     (make-process
      :name "mason"
@@ -145,15 +150,16 @@ CMD is argument list as specified in `make-process' :command."
                 (success (zerop status)))
            (mason--process-output!)
            (when (functionp callback)
-             (funcall callback proc event))))))))
+             (funcall callback))))))))
 
-(defun mason--process-sync (cmd)
+(cl-defun mason--process-sync (cmd)
   "Run CMD with ARGS synchronously."
   (let ((msg (mapconcat #'mason--quote cmd " "))
-        (buffer (generate-new-buffer "*mason process*"))
-        status success)
+        buffer status success)
+    (mason--msg "Calling `%s'" msg)
+    (when mason-dry-run (cl-return-from mason--process-sync nil))
+    (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer
-      (mason--msg "Calling `%s'" msg)
       (setq status (apply #'call-process (car cmd) nil t nil (cdr cmd)))
       (setq success (zerop status))
       (mason--process-output!)
@@ -162,19 +168,23 @@ CMD is argument list as specified in `make-process' :command."
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."
   (declare (indent defun))
-  `(run-at-time 0 nil (lambda () ,@body)))
+  `(let ((fn (lambda () ,@body)))
+     (if mason-dry-run
+         (funcall fn)
+       (run-at-time 0 nil fn))))
 
 (defmacro mason--async (&rest body)
   "Run BODY on separate thread."
   (declare (indent defun))
   `(let* ((buffer (generate-new-buffer "*mason async*"))
-          (name (buffer-name buffer)))
-     (with-current-buffer buffer
-       (make-thread
-        (lambda ()
-          ,@body
-          (mason--run-at-main (kill-buffer buffer)))
-        name t))))
+          (name (buffer-name buffer))
+          (fn (lambda ()
+                (unwind-protect (progn ,@body)
+                  (mason--run-at-main (kill-buffer buffer))))))
+     (if mason-dry-run
+         (funcall fn)
+       (with-current-buffer buffer
+         (make-thread fn name t)))))
 
 (defun mason--dir-empty-p (dir)
   "Return t if DIR exists and contains no non-dot files."
@@ -198,11 +208,11 @@ CMD is argument list as specified in `make-process' :command."
 (defconst mason--id-regexp
   ;; pkg:namespace[/name]@version
   (concat "^pkg:"
-          "\\([A-Za-z0-9_-]+\\)"  ; type
+          "\\([A-Za-z0-9_-]+\\)"    ; type
           "/"
-          "\\([A-Za-z0-9_./-]+\\)" ; namespace/name
+          "\\([%A-Za-z0-9_./-]+\\)" ; namespace/name, allow % for url escape
           "@"
-          "\\([A-Za-z0-9_.-]+\\)" ; version
+          "\\([A-Za-z0-9_.-]+\\)"   ; version
           "$"))
 
 (defun mason--parse-id (id)
@@ -247,8 +257,14 @@ CMD is argument list as specified in `make-process' :command."
                     (dolist (p path)
                       (setq tree (when tree (gethash p tree))))
                     (unless tree
-                      (mason--err "Unable to expand `%s' in `%s' with spec `%S'" s str spec))
+                      (mason--err "Unable to expand `%s' in `%s' with spec `%s'" s str (json-serialize spec)))
                     tree))))
+
+(cl-defun mason--download (url newname &optional ok-if-already-exists)
+  "Copy URL to NEWNAME.
+OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
+  (mason--msg "Downloading %s to %s" url newname)
+  (or mason-dry-run (url-copy-file url newname ok-if-already-exists)))
 
 (defun mason--extract (file &optional dest)
   "Extract archive FILE into DEST.
@@ -263,7 +279,8 @@ If DEST is nil, extract into directory named same as FILE."
               (not (string-empty-p new-suffix)))
       (mason--err "Can't extract file archive %s" file))
     (setq dest (or dest (replace-regexp-in-string extension "" file)))
-    (mkdir dest t)
+    (unless mason-dry-run
+      (make-directory dest t))
     (let* ((default-directory dest)
            (cmd (replace-regexp-in-string "%o" (shell-quote-argument dest) cmd))
            (cmd (replace-regexp-in-string "%i" (shell-quote-argument file) cmd)))
@@ -275,9 +292,8 @@ If DEST is nil, extract into directory named same as FILE."
   "Downolad archive from URL and extract to DEST."
   (let* ((filename (file-name-nondirectory (url-filename (url-generic-parse-url url))))
          (tmp (make-temp-file "mason-archive-" nil filename)))
-    (mason--msg "Downloading %s to %s" url tmp)
     (unwind-protect
-        (let ((status (url-copy-file url tmp t)))
+        (let ((status (mason--download url tmp t)))
           (unless status
             (mason--err "Download failed: %s" url))
           (mason--extract tmp dest))
@@ -307,7 +323,7 @@ Inside BODY, one can reference:
       (setq cmd-nest
             `(mason--process
               ,cmd
-              (lambda (&rest _)
+              (lambda ()
                 ,(or cmd-nest '(funcall next))))))
     cmd-nest))
 
@@ -349,7 +365,7 @@ Inside BODY, one can reference:
     (when (vectorp asset)
       (unless mason-target (mason--err "Customize `mason-target' first"))
       (setq asset (seq-find (lambda (a)
-                              (string= mason-target (gethash "target" a)))
+                              (string-prefix-p (gethash "target" a) mason-target))
                             asset))
       (unless asset (mason--err "No matching asset for target %s" mason-target))
       (puthash "asset" asset source))
@@ -363,7 +379,7 @@ Inside BODY, one can reference:
              (extract-dest (if extract-path (expand-file-name extract-path prefix) prefix)))
         (mason--async
           (mason--download-extract file-url extract-dest)
-          (run-at-time 0 nil next))))))
+          (mason--run-at-main (funcall next)))))))
 
 
 
@@ -394,11 +410,61 @@ PREFIX is where the package should've been installed."
   (when (eq mason--registry 'nan) (mason--err "Call `mason-ensure' on your init.el"))
   (when (eq mason--registry 'on-process) (mason--err "Mason is not ready yet")))
 
+(defun mason--hash-keys (table)
+  "Get list of keys from TABLE."
+  (let (keys)
+    (maphash (lambda (k _v) (push k keys)) table)
+    (nreverse keys)))
+
+(defvar mason--package-list nil)
+(defun mason--get-package-list ()
+  "Get list of mason packages."
+  (mason--assert-ensured)
+  (or mason--package-list
+      (setq mason--package-list (mason--hash-keys mason--registry))))
+
+(defvar mason--category-list nil)
+(defun mason--get-category-list ()
+  "Get list of mason categories."
+  (mason--assert-ensured)
+  (or
+   mason--category-list
+   (setq
+    mason--category-list
+    (let ((table (mason--make-hash 'equal)))
+      (maphash (lambda (_k v)
+                 (when-let* ((cat (gethash "categories" v)))
+                   (mapc (lambda (c)
+                           (puthash c t table))
+                         cat)))
+               mason--registry)
+      (mason--hash-keys table)))))
+
+(defvar mason--language-list nil)
+(defun mason--get-language-list ()
+  "Get list of mason languages."
+  (mason--assert-ensured)
+  (or
+   mason--language-list
+   (setq
+    mason--language-list
+    (let ((table (mason--make-hash 'equal)))
+      (maphash (lambda (_k v)
+                 (when-let* ((cat (gethash "languages" v)))
+                   (mapc (lambda (c)
+                           (puthash c t table))
+                         cat)))
+               mason--registry)
+      (mason--hash-keys table)))))
+
 ;;;###autoload
 (defun mason-update-registry ()
   "Refresh the mason registry."
   (interactive)
-  (setq mason--registry 'on-process)
+  (setq mason--registry 'on-process
+        mason--package-list nil
+        mason--category-list nil
+        mason--language-list nil)
   (mason--async
     (delete-directory mason-registry-dir t nil)
     (let ((reg (mason--make-hash 'equal)))
@@ -445,56 +511,154 @@ PREFIX is where the package should've been installed."
               (setq mason--registry reg)
               (mason--msg "Mason ready"))))))))
 
-(defun mason--get-package-list ()
-  "Get list of mason packages."
-  (mason--assert-ensured)
-  (let (keys)
-    (maphash (lambda (k _v) (push k keys)) mason--registry)
-    (sort keys)))
+(defvar mason--ask-package-prompt nil)
+(defvar mason--ask-package-callback nil)
+(defvar mason--ask-package-category nil)
+(defvar mason--ask-package-language nil)
+(defvar mason--ask-package-filter-function nil)
 
-(defun mason--get-package-path (package)
-  "Get PACKAGE spec path."
-  (expand-file-name (concat "packages/" package "/package.yaml") mason-registry-dir))
+(defun mason-filter-category (fake)
+  "Ask for category and filter current package completion list.
+If FAKE, throw this function to be called again."
+  (interactive (list t))
+  (unless (and mason--ask-package-prompt
+               mason--ask-package-callback)
+    (exit-minibuffer)
+    (user-error "Must not be called manually"))
+  (when fake
+    (setq mason--ask-package-filter-function 'mason-filter-category)
+    (exit-minibuffer))
+  (let* ((completion-extra-properties nil)
+         (cat (completing-read "Category: " (mason--get-category-list) nil t)))
+    (unless (string-empty-p cat)
+      (setq mason--ask-package-category cat)))
+  (mason--ask-package-0))
 
-(defun mason--ask-package ()
-  "Ask for package."
-  (let* ((completion-extra-properties
-          (list
-           :affixation-function
-           (lambda (pkgs)
-             (when pkgs
-               (let* ((lens (mapcar (lambda (p) (length p)) pkgs))
-                      (margin (max (+ (apply #'max lens) 4) 20)))
-                 (mapcar
-                  (lambda (name)
-                    (let* ((len (length name))
-                           (spaces (make-string (- margin len) ?\s))
-                           (pkg (gethash name mason--registry))
-                           (desc (gethash "description" pkg))
-                           (desc (replace-regexp-in-string "\n" " " desc)))
-                      (list name nil
-                            (concat
-                             spaces
-                             (propertize desc 'face 'font-lock-doc-face))))
-                    )
-                  pkgs)))))))
-    (completing-read "Mason: " (mason--get-package-list) nil t)))
+(defun mason-filter-language (fake)
+  "Ask for language and filter current package completion list.
+If FAKE, throw this function to be called again."
+  (interactive (list t))
+  (unless (and mason--ask-package-prompt
+               mason--ask-package-callback)
+    (user-error "Must not be called manually"))
+  (when fake
+    (setq mason--ask-package-filter-function 'mason-filter-language)
+    (exit-minibuffer))
+  (let* ((completion-extra-properties nil)
+         (lang (completing-read "Language: " (mason--get-language-list) nil t)))
+    (unless (string-empty-p lang)
+      (setq mason--ask-package-language lang)))
+  (mason--ask-package-0))
+
+(defvar-keymap mason-filter-map
+  "c" #'mason-filter-category
+  "l" #'mason-filter-language)
+
+(defvar-keymap mason--ask-package-transient-map
+  "M-m" mason-filter-map)
+
+(defun mason--ask-package-affixation-function (pkgs)
+  "Affixation function for PKGS to be used with `completion-extra-properties'."
+  (when pkgs
+    (let* ((lens (mapcar (lambda (p) (length p)) pkgs))
+           (margin (max (+ (apply #'max lens) 4) 20)))
+      (mapcar
+       (lambda (name)
+         (let* ((len (length name))
+                (spaces (make-string (- margin len) ?\s))
+                (pkg (gethash name mason--registry))
+                (desc (gethash "description" pkg))
+                (desc (replace-regexp-in-string "\n" " " desc)))
+           (list name nil
+                 (concat
+                  spaces
+                  (propertize desc 'face 'font-lock-doc-face))))
+         )
+       pkgs))))
+
+(defun mason--ask-package (prompt callback)
+  "Ask for package with PROMPT, call CALLBACK with the selected package name, if any."
+  (unless (and prompt callback)
+    (user-error "Called without prompt and callback"))
+  (setq mason--ask-package-prompt prompt
+        mason--ask-package-callback callback)
+  (unwind-protect (mason--ask-package-0)
+    (setq mason--ask-package-prompt nil
+          mason--ask-package-callback nil
+          mason--ask-package-category nil
+          mason--ask-package-language nil
+          mason--ask-package-filter-function nil)))
+
+(defun mason--ask-package-0 ()
+  "Implementation for `mason--ask-package'."
+  (set-transient-map mason--ask-package-transient-map (lambda () (minibufferp)))
+  (let* ((cat mason--ask-package-category)
+         (lang mason--ask-package-language)
+         (completion-extra-properties '(:affixation-function mason--ask-package-affixation-function))
+         (pkg
+          (completing-read
+           (concat
+            mason--ask-package-prompt
+            (cond ((and cat lang) (format " (Category: %s, Language: %s)" cat lang))
+                  (cat (format " (Category: %s)" cat))
+                  (lang (format " (Language: %s)" lang))
+                  (t nil))
+            ": ")
+           (seq-filter
+            (lambda (p)
+              (let* ((pkg (gethash p mason--registry))
+                     (cats (gethash "categories" pkg []))
+                     (langs (gethash "languages" pkg [])))
+                (and (or (null cat)
+                         (seq-contains cats cat))
+                     (or (null lang)
+                         (seq-contains langs lang)))))
+            (mason--get-package-list))
+           nil t)))
+    (if (string-empty-p pkg)
+        (when mason--ask-package-filter-function
+          (funcall mason--ask-package-filter-function nil))
+      (funcall mason--ask-package-callback pkg))))
 
 ;;;###autoload
-(defun mason-spec (package)
-  "Visit Mason spec file for PACKAGE."
-  (interactive (list (mason--ask-package)))
-  (find-file (mason--get-package-path package)))
+(defun mason-spec (package &optional interactive)
+  "Visit Mason spec file for PACKAGE.
+If INTERACTIVE, ask for PACKAGE."
+  (interactive '(nil nil))
+  (if (and package (not interactive))
+      (mason--spec-0 package)
+    (mason--ask-package "Mason Spec" #'mason--spec-0)))
+
+(defun mason--spec-0 (package)
+  "Implementation of `mason-spec' PACKAGE."
+  (if-let* ((spec (gethash package mason--registry))
+            (buf (get-buffer-create (format "*mason spec of %s*" package))))
+      (with-current-buffer buf
+        (read-only-mode -1)
+        (erase-buffer)
+        (goto-char (point-min))
+        (insert (json-serialize spec))
+        (json-pretty-print-buffer)
+        (js-json-mode)
+        (read-only-mode 1)
+        (pop-to-buffer buf))
+    (error "Invalid package `%s'" package)))
 
 ;;;###autoload
-(defun mason-install (package &optional force)
+(defun mason-install (package &optional force interactive)
   "Install a Mason PACKAGE.
 If FORCE non nil delete existing installation, if exists.
-If called interactively, ask for PACKAGE and FORCE."
-  (interactive (list nil nil))
-  (let* ((interactive (null package))
-         (package (or package (mason--ask-package)))
-         (spec (gethash package mason--registry))
+If INTERACTIVE, ask for PACKAGE and FORCE."
+  (interactive '(nil nil t))
+  (if (and package (not interactive))
+      (mason--install-0 package force nil)
+    (mason--ask-package "Mason Install"
+                        (lambda (p) (mason--install-0 p nil t)))))
+
+(defun mason--install-0 (package force interactive)
+  "Implementation of `mason-install'.
+Args: PACKAGE FORCE INTERACTIVE."
+  (let* ((spec (gethash package mason--registry))
          (name (gethash "name" spec))
          (package-dir (expand-file-name name mason-install-dir))
          ;; source
@@ -503,14 +667,15 @@ If called interactively, ask for PACKAGE and FORCE."
          (source-id (mason--parse-id source-id-raw))
          (source-supported-platforms (gethash "supported_platforms" source))
          (source-type (gethash "type" source-id))
-         (source-package (gethash "package" source-id))
+         (source-package (url-unhex-string (gethash "package" source-id)))
          (source-version (gethash "version" source-id))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; bin
          (bin (gethash "bin" spec)))
     (when (not (fboundp source-fn))
       (mason--err "Unsupported source type %s in id %s" source-type source-id-raw))
-    (when (and (file-directory-p package-dir)
+    (when (and (not mason-dry-run)
+               (file-directory-p package-dir)
                (not (directory-empty-p package-dir)))
       (if (not interactive)
           (if force
@@ -521,7 +686,7 @@ If called interactively, ask for PACKAGE and FORCE."
             (progn (mason--msg "Deleting %s" package-dir)
                    (delete-directory package-dir t nil))
           (error "Cancelled"))))
-    (mason--msg "Installing %s" source-id-raw)
+    (mason--msg "Installing %s" (url-unhex-string source-id-raw))
     (funcall
      source-fn name source-package source-version source-id source spec
      (lambda ()
@@ -535,12 +700,33 @@ If called interactively, ask for PACKAGE and FORCE."
                       (mason--err "Unsupported binary %s" val-raw))
                     (let ((bin-target (funcall bin-fn name bin-path))
                           (bin-link (expand-file-name key mason-bin-dir)))
-                      (make-directory mason-bin-dir t)
-                      (when (file-exists-p bin-link)
-                        (delete-file bin-link))
-                      (make-symbolic-link bin-target bin-link)
+                      (unless mason-dry-run
+                        (make-directory mason-bin-dir t)
+                        (when (file-exists-p bin-link)
+                          (delete-file bin-link))
+                        (make-symbolic-link bin-target bin-link))
                       (mason--msg "Symlinked %s -> %s" bin-link bin-target))))
                 bin)))))
+
+(defun mason-dry-run-install-all ()
+  "Dry run install all packages."
+  (let ((prev-dry-run mason-dry-run)
+        (total-count (length (mason--get-package-list)))
+        (success-count 0))
+    (setq mason-dry-run t)
+    (with-current-buffer (mason-buffer)
+      (read-only-mode -1)
+      (erase-buffer)
+      (read-only-mode 1))
+    (mason--msg "Started dry run test")
+    (dolist (pkg (mason--get-package-list))
+      (condition-case err
+          (progn
+            (mason-install pkg)
+            (setq success-count (1+ success-count)))
+        (error (mason--err "External error %S" err))))
+    (mason--msg "Successfully installed %d/%d packages" success-count total-count)
+    (setq mason-dry-run prev-dry-run)))
 
 (provide 'mason)
 ;;; mason.el ends here
