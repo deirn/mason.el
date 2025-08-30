@@ -124,6 +124,7 @@
 (cl-defun mason--process (cmd &optional callback)
   "Run process CMD asynchronously, with optional CALLBACK.
 CMD is argument list as specified in `make-process' :command."
+  (declare (indent defun))
   (let ((msg (mapconcat #'mason--quote cmd " "))
         buffer)
     (mason--msg "Calling `%s'" msg)
@@ -144,6 +145,11 @@ CMD is argument list as specified in `make-process' :command."
            (mason--process-output!)
            (when (functionp callback)
              (funcall callback))))))))
+
+(cl-defmacro mason--process-lamda (_cmd &optional _callback)
+  "Wrap `mason--process' inside lambda."
+  (declare (indent defun))
+  `(lambda () (mason--process ,_cmd ,_callback)))
 
 (cl-defun mason--process-sync (cmd)
   "Run CMD with ARGS synchronously."
@@ -203,30 +209,68 @@ If IGNORE-CASE is non-nil, comparison is case-insensitive."
                 collect `(puthash ,k ,v h))
      h))
 
+(defun mason--nnlist (&rest entries)
+  "Make list of non nil ENTRIES."
+  (let ((res))
+    (dolist (e (nreverse entries) res)
+      (when e (push e res)))))
+
 (defun mason--parse-yaml (path)
   "Parse mason package spec from PATH."
   (with-temp-buffer
     (insert-file-contents path)
     (yaml-parse-string (buffer-string))))
 
-(defconst mason--id-regexp
-  ;; pkg:namespace[/name]@version
-  (concat "^pkg:"
-          "\\([A-Za-z0-9_-]+\\)"    ; type
-          "/"
-          "\\([%A-Za-z0-9_./-]+\\)" ; namespace/name, allow % for url escape
-          "@"
-          "\\([A-Za-z0-9_.-]+\\)"   ; version
-          "$"))
+(defun mason--parse-purl (string)
+  "Parse a PURL STRING.
+Returns a hash table of members:
+- raw
+- scheme
+- type
+- namespace
+- name
+- version
+- qualifiers
+- subpath
 
-(defun mason--parse-id (id)
-  "Parse a source ID."
-  (if (string-match mason--id-regexp id)
-      (mason--make-hash 'equal
-        "type" (match-string 1 id)
-        "package" (match-string 2 id)
-        "version" (match-string 3 id))
-    (mason--err "Unsupported source id `%s'" id)))
+https://github.com/package-url/purl-spec"
+  (let* ((url (url-generic-parse-url string))
+         (path-and-query (url-path-and-query url))
+         (scheme (url-type url))
+         (path (car path-and-query))
+         type name namespace version
+         (q-str (cdr path-and-query))
+         qualifiers
+         (subpath (url-target url))
+         purl)
+    (let ((tn-split (s-split-up-to "/" path 1 t)))
+      (unless (length= tn-split 2)
+        (mason--err "Failed to parse PURL: `%s' does not contain type and name"))
+      (setq type (nth 0 tn-split)
+            name (nth 1 tn-split)))
+    (let ((nv-split (s-split-up-to "@" name 1 t)))
+      (setq name (nth 0 nv-split)
+            version (nth 1 nv-split)))
+    (let ((ns-split (s-split-up-to "/" name 1 t)))
+      (when (length= ns-split 2)
+        (setq namespace (url-unhex-string (nth 0 ns-split))
+              name (nth 1 ns-split)))
+      (setq name (url-unhex-string name)))
+    (setq purl (mason--make-hash 'equal
+                 "raw" string
+                 "scheme" scheme
+                 "type" type
+                 "namespace" namespace
+                 "name" name
+                 "version" version
+                 "qualifiers" nil
+                 "subpath" subpath))
+    (when q-str
+      (setq qualifiers (mason--make-hash 'equal))
+      (dolist (e (url-parse-query-string q-str))
+        (puthash (nth 0 e) (nth 1 e) qualifiers))
+      (puthash "qualifiers" qualifiers purl))
+    purl))
 
 (defconst mason--bin-regexp
   ;; [type:]path/to/bin
@@ -349,53 +393,125 @@ If DEST is nil, extract into directory named same as FILE."
 
 
 
-(defmacro mason--source! (type &rest body)
+(cl-defmacro mason--source! (type (&key namespace version qualifiers subpath) &rest body)
   "Define a mason source resolver for TYPE.
+
+Each keys declare support for PURL member:
+:NAMESPACE  none, optional or must
+:VERSION    none, optional or must
+:QUALIFIERS none or (\"q1\" \"q2\")
+:SUBPATH    none, optional or must
+
+- If none, ID can not have the member.
+- If optional, ID can have the member.
+- If must, ID must have the member.
+- Special for :qualifiers, if list, ID can only have
+  qualifiers from the specified list.
 
 Inside BODY, one can reference:
 - NAME is the name of the mason entry.
-- PACKAGE and VERSION is the name and version of package to install.
-- ID is the entire id spec.
+- ID is the entire id `mason--purl-p' struct.
+- Members of ID, prefixed with ID- (e.g.) ID-VERSION
 - PREFIX is the directory where the package is expected to be installed.
-- SOURCE is the entire source hash-table."
-  (declare (indent defun))
-  `(defun ,(intern (concat "mason--source-" (symbol-name type))) (name prefix package version id source spec next)
-     ,@body))
+- SOURCE is the entire source hash-table.
+- NEXT is the function to call after the process done."
+  (declare (indent 2))
+  (let* ((fn-name (concat "mason--source-" (symbol-name type)))
+         (values '(none optional must))
+         ;; namespace
+         (p-namespace
+          (cond
+           ((eq namespace 'none)
+            `(when id-namespace
+               (mason--err "`%s': `%s' must not have namespace" ,fn-name id-raw)))
+           ((eq namespace 'optional)
+            '(ignore))
+           ((eq namespace 'must)
+            `(unless id-namespace
+               (mason--err "`%s': `%s' must have namespace" ,fn-name id-raw)))
+           (t (error "`%s': :namespace support must be one of %S" fn-name values))))
+         ;; version
+         (p-version
+          (cond
+           ((eq version 'none)
+            `(when id-version
+               (mason--err "`%s': `%s' must not have version" ,fn-name id-raw)))
+           ((eq version 'optional)
+            '(ignore))
+           ((eq version 'must)
+            `(unless id-version
+               (mason--err "`%s': `%s' must have version" ,fn-name id-raw)))
+           (t (error "`%s': :version support must be one of %S" fn-name values))))
+         ;; subpath
+         (p-subpath
+          (cond
+           ((eq subpath 'none)
+            `(when id-subpath
+               (mason--err "`%s': `%s' must not have subpath" ,fn-name id-raw)))
+           ((eq subpath 'optional)
+            '(ignore))
+           ((eq subpath 'must)
+            `(unless id-subpath
+               (mason--err "`%s': `%s' must have subpath" ,fn-name id-raw)))
+           (t (error "`%s': :subpath support must be one of %S" fn-name values))))
+         ;; qualifiers
+         (p-qualifiers
+          (cond
+           ((eq qualifiers 'none)
+            `(when id-qualifiers
+               (mason--err "`%s': `%s' must not have qualifiers" ,fn-name id-raw)))
+           ((and (listp qualifiers) (not (seq-empty-p qualifiers)))
+            `(unless (seq-every-p (lambda (q) (member q m-qualifiers)) id-qualifiers)
+               (mason--err "`%s': `%s' must only have qualifiers of key %S" ,fn-name id-raw m-qualifiers)))
+           (t (error "`%s': :qualifiers must be none or list" fn-name)))))
+    ;; resulting function
+    `(defun ,(intern fn-name) (name prefix id source spec next)
+       (let* ((m-qualifiers ',qualifiers)
+              (id-raw        (gethash "raw" id))
+              (id-scheme     (gethash "scheme" id))
+              (id-type       (gethash "type" id))
+              (id-namespace  (gethash "namespace" id))
+              (id-name       (gethash "name" id))
+              (id-version    (gethash "version" id))
+              (id-qualifiers (gethash "qualifiers" id))
+              (id-subpath    (gethash "subpath" id)))
+         ,p-namespace
+         ,p-version
+         ,p-subpath
+         ,p-qualifiers
+         ,@body))))
 
-(defmacro mason--source-process! (&rest cmds)
-  "CMDS is vararg of command list, as specified in :command option for `make-process'."
-  (declare (indent defun))
-  (let (cmd-nest)
-    (dolist (cmd (nreverse cmds) cmd-nest)
-      (setq cmd-nest
-            `(mason--process
-              ,cmd
-              (lambda ()
-                ,(or cmd-nest '(funcall next))))))
-    cmd-nest))
+(mason--source! cargo (:namespace none
+                       :version must
+                       :qualifiers none
+                       :subpath none)
+  (mason--process `("cargo" "install"
+                    "--root" ,prefix
+                    ,(concat id-name "@" id-version))
+    next))
 
-(defmacro mason--source-list! (type &rest cmds)
-  "Call (mason--source! TYPE (mason--source-process! CMDS))."
-  (declare (indent defun))
-  `(mason--source! ,type (mason--source-process! ,@cmds)))
+(mason--source! pypi (:namespace none
+                      :version must
+                      :qualifiers none
+                      :subpath none)
+  (mason--process `("python" "-m" "venv" ,prefix)
+    (mason--process-lamda `("pip"
+                            "--python" ,(expand-file-name "bin/python" prefix)
+                            "install"
+                            "--prefix" ,prefix
+                            ,(concat id-name "==" id-version))
+      next)))
 
-(mason--source-list! cargo
-  (list "cargo" "install"
-        "--root" prefix
-        (concat package "@" version)))
-
-(mason--source-list! pypi
-  (list "python" "-m" "venv" prefix)
-  (list "pip"
-        "--python" (expand-file-name "bin/python" prefix)
-        "install"
-        "--prefix" prefix
-        (concat package "==" version)))
-
-(mason--source-list! npm
-  (list "npm" "install" "-g"
-        "--prefix" prefix
-        (concat package "@" version)))
+(mason--source! npm (:namespace optional
+                     :version must
+                     :qualifiers none
+                     :subpath none)
+  (mason--process `("npm" "install" "-g"
+                    "--prefix" prefix
+                    ,(concat
+                      id-namespace (when id-namespace "/")
+                      id-name "@" id-version))
+    next))
 
 (defconst mason--github-file-regexp
   (concat "^"
@@ -406,7 +522,10 @@ Inside BODY, one can reference:
           "\\)?"
           "$"))
 
-(mason--source! github
+(mason--source! github (:namespace must
+                        :version must
+                        :qualifiers none
+                        :subpath none)
   (let ((asset (gethash "asset" source)))
     (unless asset (mason--err "Missing asset"))
     (when (vectorp asset)
@@ -421,7 +540,7 @@ Inside BODY, one can reference:
       (unless (string-match mason--github-file-regexp file)
         (mason--err "Unsupported file asset `%s'" file))
       (let* ((file-path (match-string 1 file))
-             (file-url (concat "https://github.com/" package "/releases/download/" version "/" file-path))
+             (file-url (concat "https://github.com/" id-namespace "/" id-name "/releases/download/" id-version "/" file-path))
              (extract-path (match-string 3 file))
              (extract-dest (if extract-path (expand-file-name extract-path prefix) prefix)))
         (unless (mason--path-descendant-p extract-dest prefix)
@@ -575,6 +694,7 @@ If FAKE, throw this function to be called again."
                mason--ask-package-callback)
     (exit-minibuffer)
     (user-error "Must not be called manually"))
+  (namespace (plist-get support :namespace))
   (when fake
     (setq mason--ask-package-filter-function 'mason-filter-category)
     (exit-minibuffer))
@@ -715,11 +835,9 @@ Args: PACKAGE FORCE INTERACTIVE."
          ;; source
          (source (gethash "source" spec))
          (source-id-raw (gethash "id" source))
-         (source-id (mason--parse-id source-id-raw))
+         (source-id (mason--parse-purl source-id-raw))
          (source-supported-platforms (gethash "supported_platforms" source))
          (source-type (gethash "type" source-id))
-         (source-package (url-unhex-string (gethash "package" source-id)))
-         (source-version (gethash "version" source-id))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; links
          (bin (gethash "bin" spec))
@@ -743,7 +861,7 @@ Args: PACKAGE FORCE INTERACTIVE."
           (error "Cancelled"))))
     (mason--msg "Installing `%s' using `%s'" (url-unhex-string source-id-raw) source-fn)
     (funcall
-     source-fn name package-dir source-package source-version source-id source spec
+     source-fn name package-dir source-id source spec
      (lambda ()
        (maphash (lambda (key val-raw)
                   (setq val-raw (mason--expand val-raw spec))
