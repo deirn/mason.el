@@ -249,23 +249,62 @@ If IGNORE-CASE is non-nil, comparison is case-insensitive."
         "path" (match-string 3 bin))
     (mason--err "Unsupported bin `%s'" bin)))
 
+(defun mason--unquote-string-or-nil (s)
+  "If S is a double-quoted string, return its unescaped contents; otherwise nil."
+  (when (and (stringp s)
+             (>= (length s) 2)
+             (eq (aref s 0) ?\")
+             (eq (aref s (1- (length s))) ?\"))
+    (let ((inner (substring s 1 (1- (length s)))))
+      (replace-regexp-in-string
+       "\\\\[\\\"\\\\ntbr]"   ; match backslash escapes
+       (lambda (esc)
+         (pcase (aref esc 1)
+           (?\" "\"")
+           (?\\ "\\")
+           (?n "\n")
+           (?t "\t")
+           (?b "\b")
+           (?r "\r")
+           (_ (substring esc 1))))
+       inner))))
+
+(defun mason--unquote-string (s)
+  "If S is double-quoted, return its unescaped contents; otherwise return S."
+  (or (mason--unquote-string-or-nil s) s))
+
 (defun mason--expand (str spec)
   "Expand STR according to SPEC."
   (let* ((dollar (replace-regexp-in-string "{{\\([^}]+\\)}}" "${\\1}" str))
          (expanded
           (s-format
            dollar
-           (lambda (s)
-             (setq s (string-trim s))
-             (unless (string-match "^[A-Za-z0-9_.-]+$" s)
-               (mason--err "Unsupported expansion `%s' in `%s'" s str))
-             (let ((path (split-string s "\\."))
-                   (tree spec))
-               (dolist (p path)
-                 (setq tree (when tree (gethash p tree))))
-               (unless tree
-                 (mason--err "Unable to expand `%s' in `%s' with spec `%s'" s str (json-serialize spec)))
-               tree)))))
+           (lambda (exp)
+             ;; TODO: more proper splitting
+             (let* ((pipes (mapcar #'string-trim (split-string exp "|" 'omit-nulls)))
+                    (var (nth 0 pipes))
+                    (ops (if (length< pipes 2) nil (seq-subseq pipes 1))))
+               (when (null pipes)
+                 (mason--err "Empty expansion expression in `%s'" str))
+               (unless (string-match "^[A-Za-z0-9_.-]+$" var)
+                 (mason--err "Unsupported expansion variable `%s' in `%s'" var str))
+               (let ((path (split-string var "\\."))
+                     (tree spec))
+                 (dolist (p path)
+                   (setq tree (when tree (gethash p tree))))
+                 (unless tree
+                   (mason--err "Unable to expand variable `%s' in `%s' with spec `%s'" var str (json-serialize spec)))
+                 (setq var tree))
+               (dolist (op ops var)
+                 (cond
+                  ((string-prefix-p "strip_prefix " op)
+                   (let* ((prefix (mason--unquote-string-or-nil (string-trim (substring op (length "strip_prefix "))))))
+                     (unless prefix
+                       (mason--err "Unable to expand `%s': strip_prefix can only accept one argument of type string" str))
+                     (unless (string-prefix-p prefix var)
+                       (mason--err "Unable to expand `%s': strip_prefix: `%s' is not prefixed with `%s'" str var prefix))
+                     (setq var (substring var (length prefix)))))
+                  (t (mason--err "Unable to expand `%s': unsupported operation `%s'" str op)))))))))
     (mason--msg "Expanded `%s' to `%s'" str expanded)
     expanded))
 

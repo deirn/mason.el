@@ -21,24 +21,22 @@
 
 
 #+begin_src emacs-lisp :tangle yes
-  (condition-case err
-      (mason--expand
-       "abc-{{ version | strip_prefix \"v\"}}"
-       (mason--make-hash 'equal "version" "v1.2.3"))
-    (error (error-message-string err)))
+  (mason--expand
+   "abc-{{ version | strip_prefix \"v\"}}"
+   (mason--make-hash 'equal "version" "v1.2.3"))
 #+end_src
 
 #+RESULTS:
-: Unsupported expansion ‘version | strip_prefix "v"’ in ‘abc-{{ version | strip_prefix "v"}}’
+: abc-1.2.3
 
 
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
-   "{{some.nested.path}} it works"
+   "{{some.nested.path | strip_prefix \"no \"}} it works"
    (mason--make-hash 'equal
      "some" (mason--make-hash 'equal
              "nested" (mason--make-hash 'equal
-                       "path" "yes"))))
+                       "path" "no yes"))))
 #+end_src
 
 #+RESULTS:
@@ -50,4 +48,4 @@
 #+end_src
 
 #+RESULTS:
-: Installed 280/539 packages
+: Installed 294/539 packages
