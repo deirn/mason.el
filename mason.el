@@ -42,16 +42,8 @@
   "If not nil, only print messages what mason would do."
   :type 'boolean :group 'mason)
 
-(defcustom mason-registry-dir (expand-file-name "mason/registry" user-emacs-directory)
-  "Directory for the mason registry repository."
-  :type 'directory :group 'mason)
-
-(defcustom mason-install-dir (expand-file-name "mason/packages" user-emacs-directory)
-  "Directory for where the packages get installed."
-  :type 'directory :group 'mason)
-
-(defcustom mason-bin-dir (expand-file-name "mason/bin" user-emacs-directory)
-  "Directory for where package executables in."
+(defcustom mason-dir (expand-file-name "mason" user-emacs-directory)
+  "Directory where to find mason files."
   :type 'directory :group 'mason)
 
 (defcustom mason-registry-refresh-time (* 60 60 24 7)
@@ -96,12 +88,13 @@
       (insert (format-time-string "[%Y-%m-%d %H:%M:%S] "))
       (when mason-dry-run (insert "[DRY] "))
       (insert formatted "\n")
-      (read-only-mode 1))))
+      (read-only-mode 1))
+    formatted))
 
 (defun mason--err (format &rest args)
   "Call (mason--msg FORMAT ARGS) before throwing `error'."
   (apply #'mason--msg (concat "ERROR: " format) args)
-  (unless mason-dry-run (apply #'error format args)))
+  (apply #'error format args))
 
 (defun mason--uerr (format &rest args)
   "Call (mason--msg FORMAT ARGS) before throwing `user-error'."
@@ -191,6 +184,17 @@ CMD is argument list as specified in `make-process' :command."
   (and (file-directory-p dir)
        (null (directory-files dir nil directory-files-no-dot-files-regexp))))
 
+(defun mason--path-descendant-p (path base &optional ignore-case)
+  "Return t if PATH is equal to or underneath BASE.
+Both PATH and BASE are expanded (`file-truename'); trailing separators are ignored.
+
+If IGNORE-CASE is non-nil, comparison is case-insensitive."
+  (let* ((p (directory-file-name (file-truename path)))
+         (b (directory-file-name (file-truename base))))
+    (string-prefix-p (file-name-as-directory b)
+                     (file-name-as-directory p)
+                     ignore-case)))
+
 (defmacro mason--make-hash (test &rest kvs)
   "Make a hash table with TEST ('equal, 'eq, etc.) populated with KVS pairs."
   (declare (indent defun))
@@ -247,18 +251,23 @@ CMD is argument list as specified in `make-process' :command."
 
 (defun mason--expand (str spec)
   "Expand STR according to SPEC."
-  (setq str (replace-regexp-in-string "{{\\([^}]+\\)}}" "${\\1}" str))
-  (s-format str (lambda (s)
-                  (setq s (string-trim s))
-                  (unless (string-match "^[A-Za-z0-9_.-]+$" s)
-                    (mason--err "Unsupported expansion `%s' in `%s'" s str))
-                  (let ((path (split-string s "\\."))
-                        (tree spec))
-                    (dolist (p path)
-                      (setq tree (when tree (gethash p tree))))
-                    (unless tree
-                      (mason--err "Unable to expand `%s' in `%s' with spec `%s'" s str (json-serialize spec)))
-                    tree))))
+  (let* ((dollar (replace-regexp-in-string "{{\\([^}]+\\)}}" "${\\1}" str))
+         (expanded
+          (s-format
+           dollar
+           (lambda (s)
+             (setq s (string-trim s))
+             (unless (string-match "^[A-Za-z0-9_.-]+$" s)
+               (mason--err "Unsupported expansion `%s' in `%s'" s str))
+             (let ((path (split-string s "\\."))
+                   (tree spec))
+               (dolist (p path)
+                 (setq tree (when tree (gethash p tree))))
+               (unless tree
+                 (mason--err "Unable to expand `%s' in `%s' with spec `%s'" s str (json-serialize spec)))
+               tree)))))
+    (mason--msg "Expanded `%s' to `%s'" str expanded)
+    expanded))
 
 (cl-defun mason--download (url newname &optional ok-if-already-exists)
   "Copy URL to NEWNAME.
@@ -311,9 +320,8 @@ Inside BODY, one can reference:
 - PREFIX is the directory where the package is expected to be installed.
 - SOURCE is the entire source hash-table."
   (declare (indent defun))
-  `(defun ,(intern (concat "mason--source-" (symbol-name type))) (name package version id source spec next)
-     (let ((prefix (expand-file-name name mason-install-dir)))
-       ,@body)))
+  `(defun ,(intern (concat "mason--source-" (symbol-name type))) (name prefix package version id source spec next)
+     ,@body))
 
 (defmacro mason--source-process! (&rest cmds)
   "CMDS is vararg of command list, as specified in :command option for `make-process'."
@@ -377,6 +385,8 @@ Inside BODY, one can reference:
              (file-url (concat "https://github.com/" package "/releases/download/" version "/" file-path))
              (extract-path (match-string 3 file))
              (extract-dest (if extract-path (expand-file-name extract-path prefix) prefix)))
+        (unless (mason--path-descendant-p extract-dest prefix)
+          (mason--err "Path `%s' is not inside `%s'" extract-dest prefix))
         (mason--async
           (mason--download-extract file-url extract-dest)
           (mason--run-at-main (funcall next)))))))
@@ -392,9 +402,8 @@ Inside BODY, one can reference PATH and PREFIX.
 PATH is the relative path of the binary.
 PREFIX is where the package should've been installed."
   (declare (indent defun))
-  `(defun ,(intern (concat "mason--bin-" (symbol-name type))) (name path)
-     (let ((prefix (expand-file-name name mason-install-dir)))
-       ,@body)))
+  `(defun ,(intern (concat "mason--bin-" (symbol-name type))) (name path prefix)
+     ,@body))
 
 (mason--bin! path (expand-file-name path prefix))
 (mason--bin! exec (expand-file-name path prefix))
@@ -466,12 +475,13 @@ PREFIX is where the package should've been installed."
         mason--category-list nil
         mason--language-list nil)
   (mason--async
-    (delete-directory mason-registry-dir t nil)
-    (let ((reg (mason--make-hash 'equal)))
+    (let ((reg (mason--make-hash 'equal))
+          (reg-dir (expand-file-name "registry" mason-dir)))
+      (delete-directory reg-dir t nil)
       (dolist (e mason-registries)
         (let* ((name (car e))
                (url (cdr e))
-               (dest (expand-file-name name mason-registry-dir)))
+               (dest (expand-file-name name reg-dir)))
           (mason--download-extract url dest)
           (dolist (file (directory-files dest 'full "\\.json\\'"))
             (mason--msg "Reading registry %s" file)
@@ -482,7 +492,7 @@ PREFIX is where the package should've been installed."
                       (puthash "registry" name e)
                       (puthash (gethash "name" e) e reg))
                     (json-parse-buffer))))))
-      (with-temp-file (expand-file-name "index" mason-registry-dir)
+      (with-temp-file (expand-file-name "index" reg-dir)
         (prin1 reg (current-buffer)))
       (mason--run-at-main
         (setq mason--registry reg)
@@ -491,11 +501,12 @@ PREFIX is where the package should've been installed."
 ;;;###autoload
 (defun mason-ensure ()
   "Ensure mason is setup."
-  (setenv "PATH" (concat mason-bin-dir ":" (getenv "PATH")))
-  (add-to-list 'exec-path mason-bin-dir)
-  (let* ((reg-index (expand-file-name "index" mason-registry-dir))
+  (let* ((bin-dir (expand-file-name "bin" mason-dir))
+         (reg-index (expand-file-name "registry/index" mason-dir))
          (reg-time (file-attribute-modification-time (file-attributes reg-index)))
          reg-age)
+    (setenv "PATH" (concat bin-dir ":" (getenv "PATH")))
+    (add-to-list 'exec-path bin-dir)
     (if (null reg-time)
         (mason-update-registry)
       (setq reg-age (float-time (time-subtract (current-time) reg-time)))
@@ -660,7 +671,8 @@ If INTERACTIVE, ask for PACKAGE and FORCE."
 Args: PACKAGE FORCE INTERACTIVE."
   (let* ((spec (gethash package mason--registry))
          (name (gethash "name" spec))
-         (package-dir (expand-file-name name mason-install-dir))
+         (packages-dir (expand-file-name "packages" mason-dir))
+         (package-dir (expand-file-name name packages-dir))
          ;; source
          (source (gethash "source" spec))
          (source-id-raw (gethash "id" source))
@@ -670,8 +682,12 @@ Args: PACKAGE FORCE INTERACTIVE."
          (source-package (url-unhex-string (gethash "package" source-id)))
          (source-version (gethash "version" source-id))
          (source-fn (intern (concat "mason--source-" source-type)))
-         ;; bin
-         (bin (gethash "bin" spec)))
+         ;; links
+         (bin (gethash "bin" spec))
+         (share (gethash "share" spec))
+         (opt (gethash "opt" spec)))
+    (unless (mason--path-descendant-p package-dir packages-dir)
+      (mason--err "Path `%s' is not inside `%s'" package-dir packages-dir))
     (when (not (fboundp source-fn))
       (mason--err "Unsupported source type %s in id %s" source-type source-id-raw))
     (when (and (not mason-dry-run)
@@ -686,9 +702,9 @@ Args: PACKAGE FORCE INTERACTIVE."
             (progn (mason--msg "Deleting %s" package-dir)
                    (delete-directory package-dir t nil))
           (error "Cancelled"))))
-    (mason--msg "Installing %s" (url-unhex-string source-id-raw))
+    (mason--msg "Installing `%s' using `%s'" (url-unhex-string source-id-raw) source-fn)
     (funcall
-     source-fn name source-package source-version source-id source spec
+     source-fn name package-dir source-package source-version source-id source spec
      (lambda ()
        (maphash (lambda (key val-raw)
                   (setq val-raw (mason--expand val-raw spec))
@@ -697,36 +713,90 @@ Args: PACKAGE FORCE INTERACTIVE."
                          (bin-path (gethash "path" val))
                          (bin-fn (intern (concat "mason--bin-" bin-type))))
                     (when (or (null val) (not (fboundp bin-fn)))
-                      (mason--err "Unsupported binary %s" val-raw))
-                    (let ((bin-target (funcall bin-fn name bin-path))
-                          (bin-link (expand-file-name key mason-bin-dir)))
+                      (mason--err "Unsupported binary `%s'" val-raw))
+                    (let* ((bin-source (funcall bin-fn name bin-path package-dir))
+                           (bin-dir (expand-file-name "bin" mason-dir))
+                           (bin-link (expand-file-name key bin-dir)))
+                      (mason--msg "Symlinking binary `%s' using `%s'" val-raw bin-fn)
+                      (unless (mason--path-descendant-p bin-source package-dir)
+                        (mason--err "Path `%s' is not inside `%s'" bin-source package-dir))
+                      (unless (mason--path-descendant-p bin-link bin-dir)
+                        (mason--err "Path `%s' is not inside `%s'" bin-link bin-dir))
                       (unless mason-dry-run
-                        (make-directory mason-bin-dir t)
+                        (make-directory bin-dir t)
                         (when (file-exists-p bin-link)
                           (delete-file bin-link))
-                        (make-symbolic-link bin-target bin-link))
-                      (mason--msg "Symlinked %s -> %s" bin-link bin-target))))
-                bin)))))
+                        (make-symbolic-link bin-source bin-link))
+                      (mason--msg "Symlinked `%s' to `%s'" bin-link bin-source))))
+                bin)
+       (when share (mason--link-share-opt "share" share spec package-dir))
+       (when opt (mason--link-share-opt "opt" opt spec package-dir))
+       (mason--msg "Installed `%s'" (url-unhex-string source-id-raw))))))
+
+(defun mason--link-share-opt (dest-dir table spec package-dir)
+  "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
+Expand TABLE from SPEC, if necessary."
+  (mason--msg "Symlinking %s")
+  (setq dest-dir (expand-file-name dest-dir mason-dir))
+  (maphash
+   (lambda (link-dest link-source)
+     (setq link-source (mason--expand link-source spec)
+           link-dest (expand-file-name link-dest dest-dir))
+     (unless (mason--path-descendant-p link-source package-dir)
+       (mason--err "Path `%s' is not inside `%s'" link-source package-dir))
+     (unless (mason--path-descendant-p link-dest dest-dir)
+       (mason--err "Path `%s' is not inside `%s'" link-dest dest-dir))
+     (cond
+      ;; link/dest/: link/source/
+      ((directory-name-p link-dest)
+       (unless (directory-name-p link-source)
+         (mason--err "Link source `%s' is not a directory" link-source))
+       (mason--msg "Symlinking anything inside `%s' to `%s'" link-source link-dest)
+       (unless mason-dry-run
+         (unless (file-directory-p link-source)
+           (mason--err "Link source `%s' does not exist" link-source))
+         (make-directory link-dest t)
+         (dolist (entry (directory-files link-source nil directory-files-no-dot-files-regexp))
+           (let ((entry-dest (expand-file-name entry link-dest))
+                 (entry-source (expand-file-name entry link-source)))
+             (make-symbolic-link entry-source entry-dest)
+             (mason--msg "Symlinked `%s' to `%s'" entry-dest entry-source)))))
+      ;; link/dest: link/source
+      (t
+       (when (directory-name-p link-source)
+         (mason--err "Link source `%s' is a directory" link-source))
+       (unless (file-exists-p link-source)
+         (mason--err "Link source `%s' does not exist" link-source))
+       (unless mason-dry-run
+         (make-directory (file-name-parent-directory link-dest))
+         (make-symbolic-link link-source link-dest))
+       (mason--msg "Symlinked `%s' to `%s'" link-dest link-source))))
+   table))
 
 (defun mason-dry-run-install-all ()
   "Dry run install all packages."
+  (mason-ensure)
   (let ((prev-dry-run mason-dry-run)
+        (prev-mason-dir mason-dir)
         (total-count (length (mason--get-package-list)))
         (success-count 0))
-    (setq mason-dry-run t)
+    (setq mason-dry-run t
+          mason-dir (make-temp-file "mason-dry-run-" 'dir))
     (with-current-buffer (mason-buffer)
       (read-only-mode -1)
       (erase-buffer)
       (read-only-mode 1))
-    (mason--msg "Started dry run test")
+    (mason--msg "Started dry run test in `%s'" mason-dir)
     (dolist (pkg (mason--get-package-list))
       (condition-case err
           (progn
             (mason-install pkg)
             (setq success-count (1+ success-count)))
-        (error (mason--err "External error %S" err))))
-    (mason--msg "Successfully installed %d/%d packages" success-count total-count)
-    (setq mason-dry-run prev-dry-run)))
+        (error nil)))
+    (prog1 (mason--msg "Installed %d/%d packages" success-count total-count)
+      (delete-directory mason-dir)
+      (setq mason-dry-run prev-dry-run
+            mason-dir prev-mason-dir))))
 
 (provide 'mason)
 ;;; mason.el ends here

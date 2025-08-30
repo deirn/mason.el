@@ -29,7 +29,7 @@
 #+end_src
 
 #+RESULTS:
-: Unsupported expansion ‘version | strip_prefix "v"’ in ‘abc-${ version | strip_prefix "v"}’
+: Unsupported expansion ‘version | strip_prefix "v"’ in ‘abc-{{ version | strip_prefix "v"}}’
 
 
 #+begin_src emacs-lisp :tangle yes
@@ -47,15 +47,7 @@
 
 #+begin_src emacs-lisp :tangle yes
   (mason-dry-run-install-all)
-  (with-current-buffer (mason-buffer)
-    (buffer-string)
-    (save-restriction
-      (widen)
-      (when (> (point-max) (point-min))
-        (goto-char (point-max))
-        (forward-line -1)
-        (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
 #+end_src
 
 #+RESULTS:
-: [2025-08-30 01:05:20] [DRY] Successfully installed 282/539 packages
+: Installed 280/539 packages
