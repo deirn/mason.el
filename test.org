@@ -4,7 +4,7 @@
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
    "abc-{{version}}"
-   (mason--make-hash 'equal "version" "1.2.3"))
+   (mason--make-hash "version" "1.2.3"))
 #+end_src
 
 #+RESULTS:
@@ -14,7 +14,7 @@
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
    "abc-{{ version                       }}"
-   (mason--make-hash 'equal "version" "1.2.3"))
+   (mason--make-hash "version" "1.2.3"))
 #+end_src
 
 #+RESULTS:
@@ -24,7 +24,7 @@
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
    "abc-{{ version | strip_prefix \"v\"}}"
-   (mason--make-hash 'equal "version" "v1.2.3"))
+   (mason--make-hash "version" "v1.2.3"))
 #+end_src
 
 #+RESULTS:
@@ -34,9 +34,9 @@
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
    "{{some.nested.path | strip_prefix \"no \"}} it works"
-   (mason--make-hash 'equal
-     "some" (mason--make-hash 'equal
-             "nested" (mason--make-hash 'equal
+   (mason--make-hash
+     "some" (mason--make-hash
+             "nested" (mason--make-hash
                        "path" "no yes"))))
 #+end_src
 
@@ -49,7 +49,7 @@
 #+end_src
 
 #+RESULTS:
-: Installed 186/539 packages
+: Installed 287/539 packages
 
 
 #+begin_src emacs-lisp :tangle yes
