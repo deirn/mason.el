@@ -49,7 +49,7 @@
 #+end_src
 
 #+RESULTS:
-: Installed 287/539 packages
+: Installed 332/539 packages
 
 
 #+begin_src emacs-lisp :tangle yes
