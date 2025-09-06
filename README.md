@@ -12,8 +12,6 @@ Run `M-x mason-install RET` to install packages.
 ``` emacs-lisp
 (use-package mason
   :ensure (:host github :repo "deirn/mason.el")
-  :custom
-  (mason-target "linux_x64_gnu")
   :config
   (mason-ensure))
 ```

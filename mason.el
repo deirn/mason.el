@@ -59,17 +59,6 @@ Defaults to 1 week."
   :type '(alist :key-type string :value-type string)
   :group 'mason)
 
-;; FIXME: Auto detect?
-(defcustom mason-target nil
-  "The package target architecture to install."
-  :type '(choice (const "darwin_arm64")
-                 (const "darwin_x64")
-                 (const "linux_arm64_gnu")
-                 (const "linux_x64_gnu")
-                 (const "linux_x64_musl")
-                 (const "win_x64"))
-  :group 'mason)
-
 
 ;; Utility Functions
 
@@ -193,6 +182,68 @@ CMD CALLBACK"
          (funcall fn)
        (with-current-buffer buffer
          (make-thread fn name t)))))
+
+(defun mason--is-cygwin ()
+  "Returns non nil if `system-type' is cygwin."
+  (eq system-type 'cygwin))
+
+(defun mason--is-windows (&optional cygwin)
+  "Returns non nil if `system-type' is windows-nt.
+Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
+  (or (eq system-type 'windows-nt)
+      (and cygwin (mason--is-cygwin))))
+
+(defvar mason--target nil)
+(defun mason--update-target ()
+  "Update target detection."
+  (let (os arch libc)
+    (cond
+     ((or (mason--is-windows t))
+      (setq os '("windows")
+            arch (let* ((pa (getenv "PROCESSOR_ARCHITECTURE"))
+                        (wa (getenv "PROCESSOR_ARCHITEW6432"))
+                        (ar (or wa pa "")))
+                   (cond
+                    ((string-match-p (rx bow (or "AMD64" "x86_64" "X86-64") eow) ar) "x64")
+                    ((string-match-p (rx bow "ARM64" eow) ar) "arm64")
+                    ((string-match-p (rx bow "ARM" eow) arch) "arm32")
+                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) arch) "x86")
+                    (t nil)))
+            libc nil))
+     ((memq system-type '(ms-dos)) (ignore))
+     (t
+      (setq os (cond
+                ((eq system-type 'gnu/linux) '("linux" "unix"))
+                ((eq system-type 'darwin) '("darwin" "unix"))
+                (t '("unix")))
+            arch (let ((uname (string-trim (shell-command-to-string "uname -m 2>/dev/null || true"))))
+                   (cond
+                    ((string-match-p (rx bow (or "x86_64" "amd64" "x64" "x86-64") eow) uname) "x64")
+                    ((string-match-p (rx bow (or "aarch64" "arm64") eow) uname) "arm64")
+                    ((string-match-p (rx bow (or "armv[0-9]+" "armv[0-9]+l" "arm" "armhf" "armel") eow) uname) "arm32")
+                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) uname) "x86")
+                    (t nil)))
+            libc (let ((ldd (shell-command-to-string "ldd --version 2>&1 || true")))
+                   (cond
+                    ((string-match-p "musl" ldd) "musl")
+                    ((string-match-p (rx (or "GNU libc" "glibc" "GNU C Library")) ldd) "gnu")
+                    (t nil))))))
+    (mason--run-at-main (setq mason--target (list os arch libc)))))
+
+(defun mason--target-match (str)
+  "Return non nil when target STR match current target."
+  (let* ((os (nth 0 mason--target))
+         (arch (nth 1 mason--target))
+         (libc (nth 2 mason--target))
+         (s-split (s-split-up-to "_" str 3 'omit-nulls))
+         (s-os (nth 0 s-split))
+         (s-arch (nth 1 s-split))
+         (s-libc (nth 2 s-split))
+         (match (or s-os s-arch s-libc)))
+    (when s-os (setq match (and match (member s-os os))))
+    (when s-arch (setq match (and match (equal arch s-arch))))
+    (when s-libc (setq match (and match (equal libc s-libc))))
+    match))
 
 (defun mason--dir-empty-p (dir)
   "Return t if DIR exists and contains no non-dot files."
@@ -440,16 +491,6 @@ If DEST is nil, extract into directory named same as FILE."
           (mason--extract tmp dest))
       (when (file-exists-p tmp) (ignore-errors (delete-file tmp))))))
 
-(defun mason--is-cygwin ()
-  "Returns non nil if `system-type' is cygwin."
-  (eq system-type 'cygwin))
-
-(defun mason--is-windows (&optional cygwin)
-  "Returns non nil if `system-type' is windows-nt.
-Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
-  (or (eq system-type 'windows-nt)
-      (and cygwin (mason--is-cygwin))))
-
 (defun mason--make-wrapper (path &optional overwrite &rest content)
   "Make a wrapper script at PATH with CONTENT.
 Delete existing file if OVERWRITE is not nil."
@@ -657,16 +698,15 @@ Inside BODY, one can reference:
   (let ((asset (gethash "asset" source)))
     (unless asset (mason--err "Missing asset"))
     (when (vectorp asset)
-      (unless mason-target (mason--err "Customize `mason-target' first"))
       (setq asset
             (seq-find
              (lambda (a)
                (let ((target (gethash "target" a)))
                  (unless (vectorp target)
                    (setq target (vector target)))
-                 (seq-some (lambda (x) (string-prefix-p x mason-target)) target)))
+                 (seq-some (lambda (x) (mason--target-match x)) target)))
              asset))
-      (unless asset (mason--err "No matching asset for target %s" mason-target))
+      (unless asset (mason--err "No matching asset for target %s" mason--target))
       (puthash "asset" asset source))
     (mason--expect-hash-key asset "target" "file" "bin")
     (let ((files (gethash "file" asset))
@@ -802,6 +842,7 @@ If nil, WINDOWS-EXT defaults to `.exe'."
         mason--category-list nil
         mason--language-list nil)
   (mason--async
+    (mason--update-target)
     (let ((reg (mason--make-hash))
           (reg-dir (mason--expand-child-file-name "registry" mason-dir)))
       (delete-directory reg-dir t nil)
@@ -840,6 +881,7 @@ If nil, WINDOWS-EXT defaults to `.exe'."
       (if (> reg-age mason-registry-refresh-time)
           (mason-update-registry)
         (mason--async
+          (mason--update-target)
           (let (reg)
             (with-temp-buffer
               (insert-file-contents reg-index)
