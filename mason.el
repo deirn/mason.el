@@ -525,7 +525,7 @@ Delete existing file if OVERWRITE is not nil."
     (make-directory (file-name-parent-directory path) t)
     (when (and overwrite (file-exists-p path))
       (delete-file path))
-    (make-symbolic-link path target))
+    (make-symbolic-link target path))
   (mason--msg "Made symlink at `%s' that links to `%s'" path target))
 
 
