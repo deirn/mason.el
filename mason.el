@@ -59,6 +59,14 @@ Defaults to 1 week."
   :type '(alist :key-type string :value-type string)
   :group 'mason)
 
+(defcustom mason-show-deprecated nil
+  "Wheter to show deprecated packages."
+  :type 'boolean :group 'mason)
+
+(defface mason-deprecated
+  '((t :inherit shadow :strike-through t))
+  "Face used for deprecated packages.")
+
 
 ;; Utility Functions
 
@@ -256,8 +264,8 @@ Both PATH and BASE are expanded (`file-truename');
 trailing separators are ignored.
 
 If IGNORE-CASE is non-nil, comparison is case-insensitive."
-  (let* ((p (directory-file-name (file-truename path)))
-         (b (directory-file-name (file-truename base))))
+  (let* ((p (directory-file-name path))
+         (b (directory-file-name base)))
     (string-prefix-p (file-name-as-directory b)
                      (file-name-as-directory p)
                      ignore-case)))
@@ -267,7 +275,7 @@ If IGNORE-CASE is non-nil, comparison is case-insensitive."
 Throws error when resulting path is not inside PARENT."
   (let ((res (expand-file-name path parent)))
     (unless (mason--path-descendant-p res parent)
-      (mason--err "Path `%s' is not inside `%s'" bin-source package-dir))
+      (mason--err "Path `%s' is not inside `%s'" res parent))
     res))
 
 (defmacro mason--make-hash (&rest kvs)
@@ -480,6 +488,18 @@ If DEST is nil, extract into directory named same as FILE."
                                  shell-command-switch
                                  cmd)))))
 
+(defun mason--delete-directory (path &optional recursive)
+  "Delete directory at PATH, optionally RECURSIVE."
+  (unless mason-dry-run
+    (delete-directory path recursive nil))
+  (mason--msg "Deleted `%s'" (directory-file-name path)))
+
+(defun mason--delete-file (path)
+  "Delete file at PATH."
+  (unless mason-dry-run
+    (delete-file path))
+  (mason--msg "Deleted `%s'" path))
+
 (defun mason--download-extract (url dest)
   "Downolad archive from URL and extract to DEST."
   (let* ((filename (file-name-nondirectory (url-filename (url-generic-parse-url url))))
@@ -489,7 +509,7 @@ If DEST is nil, extract into directory named same as FILE."
           (unless status
             (mason--err "Download failed: %s" url))
           (mason--extract tmp dest))
-      (when (file-exists-p tmp) (ignore-errors (delete-file tmp))))))
+      (when (file-exists-p tmp) (ignore-errors (mason--delete-file tmp))))))
 
 (defun mason--make-wrapper (path &optional overwrite &rest content)
   "Make a wrapper script at PATH with CONTENT.
@@ -500,7 +520,7 @@ Delete existing file if OVERWRITE is not nil."
     (unless mason-dry-run
       (make-directory (file-name-parent-directory path) t)
       (when (and overwrite (file-exists-p path))
-        (delete-file path))
+        (mason--delete-file path))
       (with-temp-file path
         (if windows (insert "@echo off\r\n"
                             "setlocal enabledelayedexpansion\r\n"
@@ -524,7 +544,7 @@ Delete existing file if OVERWRITE is not nil."
   (unless mason-dry-run
     (make-directory (file-name-parent-directory path) t)
     (when (and overwrite (file-exists-p path))
-      (delete-file path))
+      (mason--delete-file path))
     (make-symbolic-link target path))
   (mason--msg "Made symlink at `%s' that links to `%s'" path target))
 
@@ -628,6 +648,11 @@ Inside BODY, one can reference:
          ,p-subpath
          ,p-qualifiers
          ,@body))))
+
+(defun mason--source-uninstall (_name prefix _id _source _spec next)
+  "A uninstall source \"resolver\", deletes the PREFIX and call NEXT."
+  (mason--delete-directory prefix t)
+  (funcall next))
 
 (mason--source! cargo (:namespace none
                        :version must
@@ -741,13 +766,19 @@ BODY is `progn' body.
 Inside BODY, one can reference:
 - PREFIX is where the package should've been installed.
 - PATH is where the wrapper/link should be placed.
-- TARGET is the target binary, depends on the TYPE."
+- TARGET is the target binary, depends on the TYPE.
+- UNINSTALL is wheter to install or uninstall the binary."
   (declare (indent defun))
-  `(defun ,(intern (concat "mason--bin-" (symbol-name type))) (prefix path target)
+  `(defun ,(intern (concat "mason--bin-" (symbol-name type))) (prefix path target uninstall)
      (ignore prefix path target)
      ,@body))
 
-(defmacro mason--bin-link! (type &optional windows-ext)
+(defmacro mason--bin-link! (path target)
+  "Call `mason--link' with PATH and TARGET."
+  `(if uninstall (mason--delete-file ,path)
+     (mason--link ,path ,target t)))
+
+(defmacro mason--bin-executable! (type &optional windows-ext)
   "Define a binary resolver for TYPE that link to binary path and adds WINDOWS-EXT on windows.
 If nil, WINDOWS-EXT defaults to `.exe'."
   (setq windows-ext (or windows-ext ".exe"))
@@ -755,42 +786,51 @@ If nil, WINDOWS-EXT defaults to `.exe'."
      (when (mason--is-windows t)
        (setq path (concat path ,windows-ext)
              target (concat target ,windows-ext)))
-     (mason--link path (mason--expand-child-file-name (concat "bin/" target) prefix))))
+     (mason--bin-link! path (mason--expand-child-file-name (concat "bin/" target) prefix))))
 
-(mason--bin! path (mason--link path (mason--expand-child-file-name target prefix)))
+(defmacro mason-bin-wrapper! (&rest content)
+  "Call `mason--make-wrapper' with CONTENT."
+  `(if uninstall (mason--delete-file path)
+     (mason--make-wrapper path t ,@content)))
 
-(mason--bin! exec (mason--make-wrapper path t (mason--expand-child-file-name target prefix)))
-(mason--bin! node (mason--make-wrapper path t
-                                       "node" (mason--expand-child-file-name (concat "lib/" target) prefix)
-                                       "--" (mason--wrapper-args)))
+(mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
 
-(mason--bin-link! npm ".cmd")
-(mason--bin-link! cargo)
+(mason--bin! exec (mason-bin-wrapper! (mason--expand-child-file-name target prefix)))
+(mason--bin! node (mason-bin-wrapper! "node" (mason--expand-child-file-name (concat "lib/" target) prefix)
+                                      "--" (mason--wrapper-args)))
+
+(mason--bin-executable! npm ".cmd")
+(mason--bin-executable! cargo)
 
 (mason--bin! pypi
   (let (extension (bin-dir "bin/"))
     (when (mason--is-windows 'cygwin) (setq extension ".exe"))
     (when (mason--is-windows) (setq bin-dir "Scripts/"))
-    (mason--link (concat path extension)
-                 (mason--expand-child-file-name (concat bin-dir target extension) prefix))))
+    (mason--bin-link! (concat path extension)
+                      (mason--expand-child-file-name (concat bin-dir target extension) prefix))))
 
 (mason--bin! pyvenv
   (let ((python "bin/python"))
     (when (mason--is-cygwin) (setq python "bin/python.exe"))
     (when (mason--is-windows) (setq python "Scripts/python.exe"))
-    (mason--make-wrapper path t
-                         (mason--expand-child-file-name python prefix)
-                         "-m" target
-                         (mason--wrapper-args))))
+    (mason-bin-wrapper! (mason--expand-child-file-name python prefix)
+                        "-m" target
+                        (mason--wrapper-args))))
 
 
 ;; The Installer
 
 (defvar mason--registry 'nan)
+(defvar mason--installed 'nan)
+
 (defun mason--assert-ensured ()
   "Assert if `mason--registry' is available."
-  (when (eq mason--registry 'nan) (mason--err "Call `mason-ensure' on your init.el"))
-  (when (eq mason--registry 'on-process) (mason--err "Mason is not ready yet")))
+  (when (or (eq mason--registry 'nan)
+            (eq mason--installed 'nan))
+    (mason--err "Call `mason-ensure' on your init.el"))
+  (when (or (eq mason--registry 'on-process)
+            (eq mason--installed 'on-process))
+    (mason--err "Mason is not ready yet")))
 
 (defvar mason--package-list nil)
 (defun mason--get-package-list ()
@@ -833,6 +873,20 @@ If nil, WINDOWS-EXT defaults to `.exe'."
                mason--registry)
       (mason--hash-keys table)))))
 
+(defun mason--update-installed ()
+  "Update `mason--installed'."
+  (let ((installed-index (mason--expand-child-file-name "packages/index" mason-dir))
+        installed)
+    (if (file-exists-p installed-index)
+        (with-temp-buffer
+          (insert-file-contents installed-index)
+          (goto-char (point-min))
+          (setq installed (read (current-buffer)))
+          (mason--run-at-main
+            (setq mason--installed installed)))
+      (mason--run-at-main
+        (setq mason--installed (mason--make-hash))))))
+
 ;;;###autoload
 (defun mason-update-registry ()
   "Refresh the mason registry."
@@ -843,9 +897,11 @@ If nil, WINDOWS-EXT defaults to `.exe'."
         mason--language-list nil)
   (mason--async
     (mason--update-target)
+    (mason--update-installed)
     (let ((reg (mason--make-hash))
           (reg-dir (mason--expand-child-file-name "registry" mason-dir)))
-      (delete-directory reg-dir t nil)
+      (when (file-directory-p)
+        (mason--delete-directory reg-dir t))
       (dolist (e mason-registries)
         (let* ((name (car e))
                (url (cdr e))
@@ -882,6 +938,7 @@ If nil, WINDOWS-EXT defaults to `.exe'."
           (mason-update-registry)
         (mason--async
           (mason--update-target)
+          (mason--update-installed)
           (let (reg)
             (with-temp-buffer
               (insert-file-contents reg-index)
@@ -898,45 +955,41 @@ If nil, WINDOWS-EXT defaults to `.exe'."
 (defvar mason--ask-package-filter-function nil)
 (defvar mason--ask-package-input nil)
 
-(defun mason-filter-category (fake)
-  "Ask for category and filter current package completion list.
-If FAKE, throw this function to be called again."
-  (interactive (list t))
-  (unless (and mason--ask-package-prompt
-               mason--ask-package-callback)
-    (exit-minibuffer)
-    (user-error "Must not be called manually"))
-  (when fake
-    (setq mason--ask-package-filter-function 'mason-filter-category)
-    (exit-minibuffer))
+(define-prefix-command 'mason-filter-map)
+(defvar-keymap mason--ask-package-transient-map
+  "M-m" 'mason-filter-map)
+
+(defmacro mason--filter! (key name &rest body)
+  "Create a filter function NAME of BODY, assign it to KEY."
+  (declare (indent 2))
+  `(progn
+     (defun ,name (fake)
+       (interactive (list t) nil)
+       (setq mason--ask-package-filter-function nil)
+       (unless (and mason--ask-package-prompt
+                    mason--ask-package-callback)
+         (user-error "Must not be called manually"))
+       (when fake
+         (setq mason--ask-package-filter-function ',name)
+         (exit-minibuffer))
+       ,@body
+       (mason--ask-package-0))
+     (keymap-set 'mason-filter-map ,key #',name)))
+
+(mason--filter! "c" mason-filter-category
   (let* ((completion-extra-properties nil)
          (cat (completing-read "Category: " (mason--get-category-list) nil t)))
     (unless (string-empty-p cat)
-      (setq mason--ask-package-category (if (string= cat "All") nil cat))))
-  (mason--ask-package-0))
+      (setq mason--ask-package-category (if (string= cat "All") nil cat)))))
 
-(defun mason-filter-language (fake)
-  "Ask for language and filter current package completion list.
-If FAKE, throw this function to be called again."
-  (interactive (list t))
-  (unless (and mason--ask-package-prompt
-               mason--ask-package-callback)
-    (user-error "Must not be called manually"))
-  (when fake
-    (setq mason--ask-package-filter-function 'mason-filter-language)
-    (exit-minibuffer))
+(mason--filter! "d" mason-toggle-deprecated
+  (setq mason-show-deprecated (not mason-show-deprecated)))
+
+(mason--filter! "l" mason-filter-language
   (let* ((completion-extra-properties nil)
          (lang (completing-read "Language: " (mason--get-language-list) nil t)))
     (unless (string-empty-p lang)
-      (setq mason--ask-package-language (if (string= lang "All") nil lang))))
-  (mason--ask-package-0))
-
-(define-prefix-command 'mason-filter-map)
-(keymap-set 'mason-filter-map "c" #'mason-filter-category)
-(keymap-set 'mason-filter-map "l" #'mason-filter-language)
-
-(defvar-keymap mason--ask-package-transient-map
-  "M-m" 'mason-filter-map)
+      (setq mason--ask-package-language (if (string= lang "All") nil lang)))))
 
 (defun mason--ask-package-affixation-function (pkgs)
   "Affixation function for PKGS to be used with `completion-extra-properties'."
@@ -950,13 +1003,17 @@ If FAKE, throw this function to be called again."
                 (pkg (gethash name mason--registry))
                 (desc (gethash "description" pkg))
                 (desc (replace-regexp-in-string "\n" " " desc))
-                (deprecated (gethash "deprecation" pkg)))
-           (list name nil
+                (deprecated (gethash "deprecation" pkg))
+                (langs (gethash "languages" pkg))
+                (lang (if (length= langs 1) (seq-first langs) nil))
+                (installed (gethash name mason--installed)))
+           (list (if deprecated (propertize name 'face 'mason-deprecated) name)
+                 (mason--lang-to-icon lang)
                  (concat
                   spaces
-                  (when deprecated (propertize "[Deprecated] " 'face 'error))
-                  (propertize desc 'face 'font-lock-doc-face))))
-         )
+                  (when installed (propertize "[Installed] " 'face 'success))
+                  (when deprecated (propertize "[Deprecated] " 'face 'mason-deprecated))
+                  (propertize desc 'face (if deprecated 'mason-deprecated 'font-lock-doc-face))))))
        pkgs))))
 
 (defun mason--ask-package (prompt callback)
@@ -982,21 +1039,24 @@ If FAKE, throw this function to be called again."
          (completion-extra-properties '(:affixation-function mason--ask-package-affixation-function))
          (pkg
           (minibuffer-with-setup-hook
-              (lambda () (when filter-key (message "%s to filter by category and language" (key-description filter-key))))
+              (lambda () (when filter-key (message "%s to open menu" (key-description filter-key))))
             (completing-read
              (concat
               mason--ask-package-prompt
-              (cond ((and cat lang) (format " (Category: %s, Language: %s)" cat lang))
-                    (cat (format " (Category: %s)" cat))
-                    (lang (format " (Language: %s)" lang))
+              (cond ((and cat lang) (format " (C:%s, L:%s)" cat lang))
+                    (cat (format " (C:%s)" cat))
+                    (lang (format " (L:%s)" lang))
                     (t nil))
               ": ")
              (seq-filter
               (lambda (p)
                 (let* ((pkg (gethash p mason--registry))
                        (cats (gethash "categories" pkg []))
-                       (langs (gethash "languages" pkg [])))
-                  (and (or (null cat)
+                       (langs (gethash "languages" pkg []))
+                       (deprecation (gethash "deprecation" pkg)))
+                  (and (or mason-show-deprecated
+                           (null deprecation))
+                       (or (null cat)
                            (seq-contains-p cats cat))
                        (or (null lang)
                            (seq-contains-p langs lang)))))
@@ -1039,13 +1099,27 @@ If FORCE non nil delete existing installation, if exists.
 If INTERACTIVE, ask for PACKAGE and FORCE."
   (interactive '(nil nil t))
   (if (and package (not interactive))
-      (mason--install-0 package force nil)
+      (mason--install-0 package force nil nil)
     (mason--ask-package "Mason Install"
-                        (lambda (p) (mason--install-0 p nil t)))))
+                        (lambda (p) (mason--install-0 p nil t nil)))))
 
-(defun mason--install-0 (package force interactive)
-  "Implementation of `mason-install'.
-Args: PACKAGE FORCE INTERACTIVE."
+;;;###autoload
+(defun mason-uninstall (package &optional interactive)
+  "Uninstall a Mason PACKAGE.
+If INTERACTIVE, ask for PACKAGE"
+  (interactive '(nil t))
+  (if (= (hash-table-count mason--installed) 0)
+      (mason--msg "No package has been installed")
+    (let ((mason--registry mason--installed)
+          mason--package-list mason--category-list mason--language-list)
+      (if (and package (not interactive))
+          (mason--install-0 package nil nil t)
+        (mason--ask-package "Mason Uninstall"
+                            (lambda (p) (mason--install-0 p nil t t)))))))
+
+(defun mason--install-0 (package force interactive uninstall)
+  "Implementation of `mason-install' and `mason-uninstall'.
+Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
   (let* ((spec (gethash package mason--registry))
          (name (gethash "name" spec))
          (deprecation (gethash "deprecation" spec))
@@ -1055,7 +1129,7 @@ Args: PACKAGE FORCE INTERACTIVE."
          (source (gethash "source" spec))
          (source-id-raw (gethash "id" source))
          (source-id (mason--parse-purl source-id-raw))
-         (source-type (gethash "type" source-id))
+         (source-type (if uninstall "uninstall" (gethash "type" source-id)))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; links
          (bin (gethash "bin" spec))
@@ -1066,26 +1140,25 @@ Args: PACKAGE FORCE INTERACTIVE."
                             "licenses" "languages" "categories"
                             "source" "bin" "share" "opt" "schemas"
                             "registry" "neovim" "ci_skip")
-    (when (and deprecation interactive)
+    (when (and deprecation interactive (not uninstall))
       (unless (y-or-n-p (format-message
                          "Package `%s' is deprecated since `%s' with the message:\n\t%s\nInstall anyway? "
                          name (gethash "since" deprecation) (gethash "message" deprecation)))
         (error "Cancelled")))
     (when (not (fboundp source-fn))
       (mason--err "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
-    (when (and (not mason-dry-run)
+    (when (and (not uninstall)
+               (not mason-dry-run)
                (file-directory-p package-dir)
                (not (directory-empty-p package-dir)))
       (if (not interactive)
-          (if force
-              (progn (mason--msg "Deleting %s" package-dir)
-                     (delete-directory package-dir t nil))
+          (if force (mason--delete-directory package-dir t)
             (mason--err "Directory %s already exists" package-dir))
         (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
-            (progn (mason--msg "Deleting %s" package-dir)
-                   (delete-directory package-dir t nil))
+            (mason--delete-directory package-dir t)
           (error "Cancelled"))))
-    (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw))
+    (if uninstall (mason--msg "Uninstalling package `%s'" name)
+      (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
     (funcall
      source-fn name package-dir source-id source spec
      (lambda ()
@@ -1102,13 +1175,18 @@ Args: PACKAGE FORCE INTERACTIVE."
               (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
                      (bin-link (mason--expand-child-file-name key bin-dir)))
                 (mason--msg "Resolving binary `%s'" val-raw)
-                (funcall bin-fn package-dir bin-link bin-path))))
+                (funcall bin-fn package-dir bin-link bin-path uninstall))))
           bin))
-       (when share (mason--link-share-opt "share" share spec source-id package-dir))
-       (when opt (mason--link-share-opt "opt" opt spec source-id package-dir))
-       (mason--msg "Installed `%s'" name)))))
+       (when share (mason--link-share-opt "share" share spec source-id package-dir uninstall))
+       (when opt (mason--link-share-opt "opt" opt spec source-id package-dir uninstall))
+       (unless mason-dry-run
+         (if uninstall (remhash name mason--installed)
+           (puthash name spec mason--installed))
+         (with-temp-file (mason--expand-child-file-name "index" packages-dir)
+           (prin1 mason--installed (current-buffer))))
+       (mason--msg "%s `%s'" (if uninstall "Uninstalled" "Installed") name)))))
 
-(defun mason--link-share-opt (dest-dir table spec source-id package-dir)
+(defun mason--link-share-opt (dest-dir table spec source-id package-dir uninstall)
   "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
 Expand TABLE from SPEC and SOURCE-ID, if necessary."
   (mason--msg "Symlinking %s" dest-dir)
@@ -1124,7 +1202,6 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
       ((directory-name-p link-dest)
        (unless (directory-name-p link-source)
          (mason--err "Link source `%s' is not a directory" link-source))
-       (mason--msg "Symlinking anything inside `%s' to `%s'" link-source link-dest)
        (unless mason-dry-run
          (unless (file-directory-p link-source)
            (mason--err "Link source `%s' does not exist" link-source))
@@ -1132,8 +1209,10 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
          (dolist (entry (directory-files link-source nil directory-files-no-dot-files-regexp))
            (let ((entry-dest (mason--expand-child-file-name entry link-dest))
                  (entry-source (mason--expand-child-file-name entry link-source)))
-             (make-symbolic-link entry-source entry-dest)
-             (mason--msg "Symlinked `%s' to `%s'" entry-dest entry-source)))))
+             (if uninstall (mason--delete-file entry-dest)
+               (mason--link entry-dest entry-source))))
+         (when (and uninstall (directory-empty-p link-dest))
+           (mason--delete-directory link-dest))))
       ;; link/dest: link/source
       (t
        (when (directory-name-p link-source)
@@ -1142,8 +1221,8 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
          (mason--err "Link source `%s' does not exist" link-source))
        (unless mason-dry-run
          (make-directory (file-name-parent-directory link-dest))
-         (make-symbolic-link link-source link-dest))
-       (mason--msg "Symlinked `%s' to `%s'" link-dest link-source))))
+         (if uninstall (mason--delete-file link-dest)
+           (mason--link link-dest link-source))))))
    table))
 
 (defun mason-dry-run-install (package)
