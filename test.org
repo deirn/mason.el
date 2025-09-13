@@ -72,9 +72,10 @@
             "pkg:rpm/opensuse/curl@7.56.1-1.1.?arch=i386&distro=opensuse-tumbleweed"))
          (purls (mapcar #'mason--parse-purl str)))
     (with-temp-buffer
-      (insert "scheme namespace name version qualifiers subpath\n")
+      (insert "scheme type namespace name version qualifiers subpath\n")
       (dolist (purl purls)
         (insert (or (gethash "scheme" purl) "nil") ?\s
+                (or (gethash "type" purl) "nil") ?\s
                 (or (gethash "namespace" purl) "nil") ?\s
                 (or (gethash "name" purl) "nil") ?\s
                 (or (gethash "version" purl) "nil") ?\s
@@ -90,21 +91,21 @@
 
 #+RESULTS:
 #+begin_example
-scheme namespace              name                     version                       qualifiers                                     subpath
-pkg    birkenfeld             pygments-main            244fd47e07d1014f0aed9c        nil                                            nil
-pkg    debian                 curl                     7.50.3-1                      {"distro":"jessie","arch":"i386"}              nil
-pkg    nil                    cassandra                sha256:244fd47e07d1004f0aed9c nil                                            nil
-pkg    customer               dockerimage              sha256:244fd47e07d1004f0aed9c {"repository_url":"gcr.io"}                    nil
-pkg    nil                    jruby-launcher           1.1.2                         {"platform":"java"}                            nil
-pkg    nil                    ruby-advisory-db-check   0.12.4                        nil                                            nil
-pkg    package-url            purl-spec                244fd47e07d1004f0aed9c        nil                                            nil
-pkg    google.golang.org      genproto                 nil                           nil                                            googleapis/api/annotations
-pkg    org.apache.xmlgraphics batik-anim               1.9.1                         {"packaging":"sources"}                        nil
-pkg    org.apache.xmlgraphics batik-anim               1.9.1                         {"repository_url":"repo.spring.io/release"}    nil
-pkg    @angular               animation                12.3.1                        nil                                            nil
-pkg    nil                    foobar                   12.3.1                        nil                                            nil
-pkg    nil                    EnterpriseLibrary.Common 6.0.1304                      nil                                            nil
-pkg    nil                    django                   1.11.1                        nil                                            nil
-pkg    fedora                 curl                     7.50.3-1.fc25                 {"distro":"fedora-25","arch":"i386"}           nil
-pkg    opensuse               curl                     7.56.1-1.1.                   {"distro":"opensuse-tumbleweed","arch":"i386"} nil
+scheme type      namespace              name                     version                       qualifiers                                     subpath
+pkg    bitbucket birkenfeld             pygments-main            244fd47e07d1014f0aed9c        nil                                            nil
+pkg    deb       debian                 curl                     7.50.3-1                      {"distro":"jessie","arch":"i386"}              nil
+pkg    docker    nil                    cassandra                sha256:244fd47e07d1004f0aed9c nil                                            nil
+pkg    docker    customer               dockerimage              sha256:244fd47e07d1004f0aed9c {"repository_url":"gcr.io"}                    nil
+pkg    gem       nil                    jruby-launcher           1.1.2                         {"platform":"java"}                            nil
+pkg    gem       nil                    ruby-advisory-db-check   0.12.4                        nil                                            nil
+pkg    github    package-url            purl-spec                244fd47e07d1004f0aed9c        nil                                            nil
+pkg    golang    google.golang.org      genproto                 nil                           nil                                            googleapis/api/annotations
+pkg    maven     org.apache.xmlgraphics batik-anim               1.9.1                         {"packaging":"sources"}                        nil
+pkg    maven     org.apache.xmlgraphics batik-anim               1.9.1                         {"repository_url":"repo.spring.io/release"}    nil
+pkg    npm       @angular               animation                12.3.1                        nil                                            nil
+pkg    npm       nil                    foobar                   12.3.1                        nil                                            nil
+pkg    nuget     nil                    EnterpriseLibrary.Common 6.0.1304                      nil                                            nil
+pkg    pypi      nil                    django                   1.11.1                        nil                                            nil
+pkg    rpm       fedora                 curl                     7.50.3-1.fc25                 {"distro":"fedora-25","arch":"i386"}           nil
+pkg    rpm       opensuse               curl                     7.56.1-1.1.                   {"distro":"opensuse-tumbleweed","arch":"i386"} nil
 #+end_example

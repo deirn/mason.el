@@ -1008,7 +1008,7 @@ If nil, WINDOWS-EXT defaults to `.exe'."
                 (lang (if (length= langs 1) (seq-first langs) nil))
                 (installed (gethash name mason--installed)))
            (list (if deprecated (propertize name 'face 'mason-deprecated) name)
-                 (mason--lang-to-icon lang)
+                 nil
                  (concat
                   spaces
                   (when installed (propertize "[Installed] " 'face 'success))
