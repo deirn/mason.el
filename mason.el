@@ -489,9 +489,10 @@ If DEST is nil, extract into directory named same as FILE."
                                  shell-command-switch
                                  cmd)))))
 
-(defun mason--delete-directory (path &optional recursive)
-  "Delete directory at PATH, optionally RECURSIVE."
-  (unless mason-dry-run
+(defun mason--delete-directory (path &optional recursive ignore-dry-run)
+  "Delete directory at PATH, optionally RECURSIVE.
+If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
+  (when (or (not mason-dry-run) ignore-dry-run)
     (delete-directory path recursive nil))
   (mason--msg "Deleted `%s'" (directory-file-name path)))
 
@@ -508,21 +509,23 @@ If it a supported archive, extract into directory DEST.
 If not, simply save it as DEST, or inside DEST if it is a directory.
 See `mason--extract-strategies'."
   (let* ((filename (file-name-nondirectory (url-filename (url-generic-parse-url url))))
-         (tmp (make-temp-file "mason-download-" nil (concat "-" filename))))
+         (tmp-dir (make-temp-file "mason-download-" 'dir))
+         (tmp-file (mason--expand-child-file-name filename tmp-dir)))
     (unwind-protect
-        (let ((status (mason--download url tmp t)))
+        (let ((status (mason--download url tmp-file t)))
           (unless status
             (mason--err "Download failed: %s" url))
           (if (mason--supported-archive filename)
-              (mason--extract tmp dest)
+              (mason--extract tmp-file dest)
             (unless mason-dry-run
               (when (or (directory-name-p dest) (file-directory-p dest))
                 (progn (make-directory dest t)
                        (setq dest (mason--expand-child-file-name filename dest))))
               (make-directory (file-name-parent-directory dest) t)
-              (copy-file tmp dest))
-            (mason--msg "Copied `%s' to `%s'" tmp dest)))
-      (when (file-exists-p tmp) (ignore-errors (mason--delete-file tmp t))))))
+              (copy-file tmp-file dest))
+            (mason--msg "Copied `%s' to `%s'" tmp-file dest)))
+      (when (file-directory-p tmp-dir)
+        (ignore-errors (mason--delete-directory tmp-dir t t))))))
 
 (defun mason--make-wrapper (path &optional overwrite &rest content)
   "Make a wrapper script at PATH with CONTENT.
