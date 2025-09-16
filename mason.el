@@ -151,7 +151,7 @@ CMD is argument list as specified in `make-process' :command."
            (when (functionp callback)
              (funcall callback))))))))
 
-(cl-defmacro mason--process-lamda (cmd &optional callback)
+(defmacro mason--process-lamda (cmd &optional callback)
   "Wrap `mason--process' inside lambda.
 CMD CALLBACK"
   (declare (indent defun))
@@ -258,17 +258,12 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
   (and (file-directory-p dir)
        (null (directory-files dir nil directory-files-no-dot-files-regexp))))
 
-(defun mason--path-descendant-p (path base &optional ignore-case)
-  "Return t if PATH is equal to or underneath BASE.
-Both PATH and BASE are expanded (`file-truename');
-trailing separators are ignored.
-
-If IGNORE-CASE is non-nil, comparison is case-insensitive."
+(defun mason--path-descendant-p (path base)
+  "Return t if PATH is equal to or underneath BASE."
   (let* ((p (directory-file-name path))
          (b (directory-file-name base)))
     (string-prefix-p (file-name-as-directory b)
-                     (file-name-as-directory p)
-                     ignore-case)))
+                     (file-name-as-directory p))))
 
 (defun mason--expand-child-file-name (path parent)
   "Expand file PATH to PARENT, like `expand-file-name'.
@@ -437,7 +432,7 @@ https://github.com/package-url/purl-spec"
       (mason--msg "Expanded `%s' to `%s'" str expanded-str))
     expanded-str))
 
-(cl-defun mason--download (url newname &optional ok-if-already-exists)
+(defun mason--download (url newname &optional ok-if-already-exists)
   "Copy URL to NEWNAME.
 OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
   (mason--msg "Downloading %s to %s" url newname)
@@ -453,6 +448,7 @@ OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
     ("\\.tar\\'"       ("tar")             "tar -xpf %i -C %o")
 
     ("\\.zip\\'"       ("unzip")           "unzip -o -d %o %i")
+    ("\\.vsix\\'"      ("unzip")           "unzip -o -d %o %i")
     ("\\.7z\\'"        ("7z")              "7z x -aoa -o%o %i")
 
     ("\\.gz\\'"        ("gzip")            "cd %o && gzip -dc %i > $(basename %i .gz)")
@@ -468,8 +464,13 @@ OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
     ("\\.ar\\'"        ("ar")              "cd %o && ar x %i")
     ("\\.xar\\'"       ("xar")             "xar -x -f %i -C %o")))
 
+(defun mason--supported-archive (file)
+  "Return car of matching `mason--extract-strategies' if FILE is supported."
+  (car (seq-find (lambda (s) (string-match-p (car s) file))
+                 mason--extract-strategies)))
+
 (defun mason--extract (file &optional dest)
-  "Extract archive FILE into DEST.
+  "Extract archive FILE into directory DEST.
 If DEST is nil, extract into directory named same as FILE."
   (let* ((rule (seq-find (lambda (e) (string-match (car e) file))
                          mason--extract-strategies))
@@ -494,29 +495,41 @@ If DEST is nil, extract into directory named same as FILE."
     (delete-directory path recursive nil))
   (mason--msg "Deleted `%s'" (directory-file-name path)))
 
-(defun mason--delete-file (path)
-  "Delete file at PATH."
-  (unless mason-dry-run
+(defun mason--delete-file (path &optional ignore-dry-run)
+  "Delete file at PATH.
+If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
+  (when (or (not mason-dry-run) ignore-dry-run)
     (delete-file path))
   (mason--msg "Deleted `%s'" path))
 
-(defun mason--download-extract (url dest)
-  "Downolad archive from URL and extract to DEST."
+(defun mason--download-maybe-extract (url dest)
+  "Download file from URL.
+If it a supported archive, extract into directory DEST.
+If not, simply save it as DEST, or inside DEST if it is a directory.
+See `mason--extract-strategies'."
   (let* ((filename (file-name-nondirectory (url-filename (url-generic-parse-url url))))
-         (tmp (make-temp-file "mason-archive-" nil filename)))
+         (tmp (make-temp-file "mason-download-" nil (concat "-" filename))))
     (unwind-protect
         (let ((status (mason--download url tmp t)))
           (unless status
             (mason--err "Download failed: %s" url))
-          (mason--extract tmp dest))
-      (when (file-exists-p tmp) (ignore-errors (mason--delete-file tmp))))))
+          (if (mason--supported-archive filename)
+              (mason--extract tmp dest)
+            (unless mason-dry-run
+              (when (or (directory-name-p dest) (file-directory-p dest))
+                (progn (make-directory dest t)
+                       (setq dest (mason--expand-child-file-name filename dest))))
+              (make-directory (file-name-parent-directory dest) t)
+              (copy-file tmp dest))
+            (mason--msg "Copied `%s' to `%s'" tmp dest)))
+      (when (file-exists-p tmp) (ignore-errors (mason--delete-file tmp t))))))
 
 (defun mason--make-wrapper (path &optional overwrite &rest content)
   "Make a wrapper script at PATH with CONTENT.
 Delete existing file if OVERWRITE is not nil."
   (let* ((windows (mason--is-windows t))
          (path (if windows (concat path ".bat") path))
-         (c (mapconcat #'identity content " ")))
+         (c (mapconcat #'mason--quote content " ")))
     (unless mason-dry-run
       (make-directory (file-name-parent-directory path) t)
       (when (and overwrite (file-exists-p path))
@@ -529,14 +542,15 @@ Delete existing file if OVERWRITE is not nil."
                             "  set \"args=!args! \"%%~A\"\"\r\n"
                             ")\r\n"
                             (replace-regexp-in-string "\n" "\r\n" c))
-          (insert "#!/usr/bin/env sh\n" c)))
+          (insert "#!/usr/bin/env sh\n"
+                  "exec " c)))
       (unless windows
         (set-file-modes path #o755)))
     (mason--msg "Made wrapper script at `%s'" path)))
 
 (defun mason--wrapper-args ()
   "Arguments expansion for `mason--make-wrapper', $@ in unix."
-  (if (mason--is-windows) "!args!" "$@"))
+  (if (mason--is-windows) "!args!" "\"$@\""))
 
 (defun mason--link (path target &optional overwrite)
   "Create a symbolic link at PATH to TARGET.
@@ -551,7 +565,13 @@ Delete existing file if OVERWRITE is not nil."
 
 ;; Source Resolvers
 
-(cl-defmacro mason--source! (type (&key namespace version qualifiers subpath keys) &rest body)
+(cl-defmacro mason--source! (type
+                             (&key (namespace  'none)
+                                   (version    'must)
+                                   (qualifiers 'none)
+                                   (subpath    'none)
+                                   (keys       '()))
+                             &rest body)
   "Define a mason source resolver for TYPE.
 
 These keys declare support for PURL member:
@@ -571,7 +591,7 @@ There also special keys:
 
 Inside BODY, one can reference:
 - NAME is the name of the mason entry.
-- ID is the entire id `mason--purl-p' struct.
+- ID is the entire `mason--parse-purl' result.
 - Members of ID, prefixed with ID- (e.g.) ID-VERSION
 - PREFIX is the directory where the package is expected to be installed.
 - SOURCE is the entire source hash-table.
@@ -649,16 +669,30 @@ Inside BODY, one can reference:
          ,p-qualifiers
          ,@body))))
 
+(defun mason--source-target (source key)
+  "Get value that with matching target from SOURCE[KEY].
+See `mason--target-match'"
+  (let ((val (gethash key source)))
+    (unless val (mason--err "Missing `%s'" key))
+    (when (vectorp val)
+      (setq val
+            (seq-find
+             (lambda (e)
+               (let ((target (gethash "target" e)))
+                 (unless (vectorp target)
+                   (setq target (vector target)))
+                 (seq-some (lambda (x) (mason--target-match x)) target)))
+             val))
+      (unless val (mason--err "No matching `%s' for target %s" key mason--target))
+      (puthash key val source))
+    val))
+
 (defun mason--source-uninstall (_name prefix _id _source _spec next)
   "A uninstall source \"resolver\", deletes the PREFIX and call NEXT."
   (mason--delete-directory prefix t)
   (funcall next))
 
-(mason--source! cargo (:namespace none
-                       :version must
-                       :qualifiers ("repository_url" "rev" "locked")
-                       :subpath none
-                       :keys ())
+(mason--source! cargo (:qualifiers ("repository_url" "rev" "locked"))
   (let (repo-url rev (locked t))
     (when id-qualifiers
       (setq repo-url (gethash "repository_url" id-qualifiers)
@@ -675,10 +709,7 @@ Inside BODY, one can reference:
                       ,@(when locked '("--locked")))
       next)))
 
-(mason--source! pypi (:namespace none
-                      :version must
-                      :qualifiers ("extra")
-                      :subpath none
+(mason--source! pypi (:qualifiers ("extra")
                       :keys ("extra_packages"))
   (let (extra)
     (when id-qualifiers
@@ -694,9 +725,6 @@ Inside BODY, one can reference:
         next))))
 
 (mason--source! npm (:namespace optional
-                     :version must
-                     :qualifiers none
-                     :subpath none
                      :keys ("extra_packages"))
   (mason--process `("npm" "install" "-g"
                     "--prefix" ,prefix
@@ -716,48 +744,54 @@ Inside BODY, one can reference:
           "$"))
 
 (mason--source! github (:namespace must
-                        :version must
-                        :qualifiers none
-                        :subpath none
                         :keys ("asset"))
-  (let ((asset (gethash "asset" source)))
-    (unless asset (mason--err "Missing asset"))
-    (when (vectorp asset)
-      (setq asset
-            (seq-find
-             (lambda (a)
-               (let ((target (gethash "target" a)))
-                 (unless (vectorp target)
-                   (setq target (vector target)))
-                 (seq-some (lambda (x) (mason--target-match x)) target)))
-             asset))
-      (unless asset (mason--err "No matching asset for target %s" mason--target))
-      (puthash "asset" asset source))
-    (mason--expect-hash-key asset "target" "file" "bin")
-    (let ((files (gethash "file" asset))
-          tasks)
-      (unless (vectorp files)
-        (setq files (vector files)))
-      (setq tasks
-            (mapcar
-             (lambda (file)
-               (setq file (mason--expand file id))
-               (unless (string-match mason--github-file-regexp file)
-                 (mason--err "Unsupported file asset `%s'" file))
-               (let* ((file-path (match-string 1 file))
-                      (file-url (concat "https://github.com/" id-namespace "/" id-name "/releases/download/" id-version "/" file-path))
-                      (extract-path (match-string 3 file))
-                      (extract-dest (if extract-path (mason--expand-child-file-name extract-path prefix) prefix)))
-                 (lambda ()
-                   (mason--download-extract file-url extract-dest))))
-             files))
-      (mason--async
-        (dolist (task tasks)
-          (funcall task))
-        (mason--run-at-main (funcall next))))))
+  (let* ((asset (mason--source-target source "asset"))
+         (files (gethash "file" asset))
+         tasks)
+    (unless files (mason--err "No files"))
+    (unless (vectorp files) (setq files (vector files)))
+    (setq tasks
+          (mapcar
+           (lambda (file)
+             (setq file (mason--expand file id))
+             (unless (string-match mason--github-file-regexp file)
+               (mason--err "Unsupported file asset `%s'" file))
+             (let* ((file-path (match-string 1 file))
+                    (file-url (concat "https://github.com/" id-namespace "/" id-name "/releases/download/" id-version "/" file-path))
+                    (extract-path (match-string 3 file))
+                    (extract-dest (if extract-path (mason--expand-child-file-name extract-path prefix) prefix)))
+               (lambda ()
+                 (mason--download-maybe-extract file-url extract-dest))))
+           files))
+    (mason--async
+      (dolist (task tasks)
+        (funcall task))
+      (mason--run-at-main (funcall next)))))
+
+(mason--source! generic (:namespace optional
+                         :version optional
+                         :keys ("download"))
+  (let* ((download (mason--source-target source "download"))
+         (files (gethash "files" download))
+         tasks)
+    (unless files (mason--err "No files"))
+    (maphash (lambda (dest url)
+               (setq url (mason--expand url id))
+               (let ((archive (mason--supported-archive dest)))
+                 (when archive
+                   (setq dest (replace-regexp-in-string archive "" dest))
+                   (when (string= dest name)
+                     (setq dest "."))))
+               (setq dest (mason--expand-child-file-name dest prefix))
+               (push (lambda () (mason--download-maybe-extract url dest)) tasks))
+             files)
+    (mason--async
+      (dolist (task (nreverse tasks))
+        (funcall task))
+      (mason--run-at-main (funcall next)))))
 
 
-;; Binary, Share, and Opt Resolvers
+;; Binary Resolvers
 
 (defmacro mason--bin! (type &rest body)
   "Define a mason binary resolver for TYPE.
@@ -776,7 +810,9 @@ Inside BODY, one can reference:
 (defmacro mason--bin-link! (path target)
   "Call `mason--link' with PATH and TARGET."
   `(if uninstall (mason--delete-file ,path)
-     (mason--link ,path ,target t)))
+     (mason--link ,path ,target t)
+     (unless mason-dry-run
+       (set-file-modes path (file-modes-symbolic-to-number "+x" (file-modes path))))))
 
 (defmacro mason--bin-executable! (type &optional windows-ext)
   "Define a binary resolver for TYPE that link to binary path and adds WINDOWS-EXT on windows.
@@ -788,16 +824,24 @@ If nil, WINDOWS-EXT defaults to `.exe'."
              target (concat target ,windows-ext)))
      (mason--bin-link! path (mason--expand-child-file-name (concat "bin/" target) prefix))))
 
-(defmacro mason-bin-wrapper! (&rest content)
+(defmacro mason--bin-wrapper! (&rest content)
   "Call `mason--make-wrapper' with CONTENT."
   `(if uninstall (mason--delete-file path)
      (mason--make-wrapper path t ,@content)))
 
+(defmacro mason--bin-exec! (name &rest cmd)
+  "Create binary resolver NAME that creates wrapper that calls target using CMD."
+  `(mason--bin! ,name (mason--bin-wrapper! ,@cmd (mason--expand-child-file-name target prefix) (mason--wrapper-args))))
+
 (mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
 
-(mason--bin! exec (mason-bin-wrapper! (mason--expand-child-file-name target prefix)))
-(mason--bin! node (mason-bin-wrapper! "node" (mason--expand-child-file-name (concat "lib/" target) prefix)
-                                      "--" (mason--wrapper-args)))
+(mason--bin-exec! dotnet "dotnet")
+(mason--bin-exec! exec)
+(mason--bin-exec! java-jar "java" "-jar")
+(mason--bin-exec! node "node")
+(mason--bin-exec! php "php")
+(mason--bin-exec! python "python3")
+(mason--bin-exec! ruby "ruby")
 
 (mason--bin-executable! npm ".cmd")
 (mason--bin-executable! cargo)
@@ -813,9 +857,9 @@ If nil, WINDOWS-EXT defaults to `.exe'."
   (let ((python "bin/python"))
     (when (mason--is-cygwin) (setq python "bin/python.exe"))
     (when (mason--is-windows) (setq python "Scripts/python.exe"))
-    (mason-bin-wrapper! (mason--expand-child-file-name python prefix)
-                        "-m" target
-                        (mason--wrapper-args))))
+    (mason--bin-wrapper! (mason--expand-child-file-name python prefix)
+                         "-m" target
+                         (mason--wrapper-args))))
 
 
 ;; The Installer
@@ -900,13 +944,14 @@ If nil, WINDOWS-EXT defaults to `.exe'."
     (mason--update-installed)
     (let ((reg (mason--make-hash))
           (reg-dir (mason--expand-child-file-name "registry" mason-dir)))
-      (when (file-directory-p)
+      (when (file-directory-p reg-dir)
         (mason--delete-directory reg-dir t))
       (dolist (e mason-registries)
         (let* ((name (car e))
                (url (cdr e))
                (dest (mason--expand-child-file-name name reg-dir)))
-          (mason--download-extract url dest)
+          (make-directory dest t)
+          (mason--download-maybe-extract url dest)
           (dolist (file (directory-files dest 'full "\\.json\\'"))
             (mason--msg "Reading registry %s" file)
             (with-temp-buffer
@@ -1121,10 +1166,11 @@ If INTERACTIVE, ask for PACKAGE"
   "Implementation of `mason-install' and `mason-uninstall'.
 Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
   (let* ((spec (gethash package mason--registry))
+         (spec (read (prin1-to-string spec))) ; deep copy
          (name (gethash "name" spec))
          (deprecation (gethash "deprecation" spec))
          (packages-dir (mason--expand-child-file-name "packages" mason-dir))
-         (package-dir (mason--expand-child-file-name name packages-dir))
+         (package-dir (file-name-as-directory (mason--expand-child-file-name name packages-dir)))
          ;; source
          (source (gethash "source" spec))
          (source-id-raw (gethash "id" source))
@@ -1145,6 +1191,8 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
                          "Package `%s' is deprecated since `%s' with the message:\n\t%s\nInstall anyway? "
                          name (gethash "since" deprecation) (gethash "message" deprecation)))
         (error "Cancelled")))
+    (if uninstall (mason--msg "Uninstalling package `%s'" name)
+      (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
     (when (not (fboundp source-fn))
       (mason--err "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
     (when (and (not uninstall)
@@ -1157,8 +1205,6 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
         (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
             (mason--delete-directory package-dir t)
           (error "Cancelled"))))
-    (if uninstall (mason--msg "Uninstalling package `%s'" name)
-      (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
     (funcall
      source-fn name package-dir source-id source spec
      (lambda ()
@@ -1210,19 +1256,19 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
            (let ((entry-dest (mason--expand-child-file-name entry link-dest))
                  (entry-source (mason--expand-child-file-name entry link-source)))
              (if uninstall (mason--delete-file entry-dest)
-               (mason--link entry-dest entry-source))))
+               (mason--link entry-dest entry-source t))))
          (when (and uninstall (directory-empty-p link-dest))
            (mason--delete-directory link-dest))))
       ;; link/dest: link/source
       (t
        (when (directory-name-p link-source)
          (mason--err "Link source `%s' is a directory" link-source))
-       (unless (file-exists-p link-source)
-         (mason--err "Link source `%s' does not exist" link-source))
        (unless mason-dry-run
-         (make-directory (file-name-parent-directory link-dest))
+         (unless (file-exists-p link-source)
+           (mason--err "Link source `%s' does not exist" link-source))
+         (make-directory (file-name-parent-directory link-dest) t)
          (if uninstall (mason--delete-file link-dest)
-           (mason--link link-dest link-source))))))
+           (mason--link link-dest link-source t))))))
    table))
 
 (defun mason-dry-run-install (package)
