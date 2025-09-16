@@ -817,11 +817,11 @@ Inside BODY, one can reference:
      (unless mason-dry-run
        (set-file-modes path (file-modes-symbolic-to-number "+x" (file-modes path))))))
 
-(defmacro mason--bin-executable! (type &optional windows-ext)
-  "Define a binary resolver for TYPE that link to binary path and adds WINDOWS-EXT on windows.
+(defmacro mason--bin-executable! (name &optional windows-ext)
+  "Binary resolver NAME that link to binary path and adds WINDOWS-EXT on windows.
 If nil, WINDOWS-EXT defaults to `.exe'."
   (setq windows-ext (or windows-ext ".exe"))
-  `(mason--bin! ,type
+  `(mason--bin! ,name
      (when (mason--is-windows t)
        (setq path (concat path ,windows-ext)
              target (concat target ,windows-ext)))
@@ -833,7 +833,7 @@ If nil, WINDOWS-EXT defaults to `.exe'."
      (mason--make-wrapper path t ,@content)))
 
 (defmacro mason--bin-exec! (name &rest cmd)
-  "Create binary resolver NAME that creates wrapper that calls target using CMD."
+  "Binary resolver NAME that creates wrapper that calls target using CMD."
   `(mason--bin! ,name (mason--bin-wrapper! ,@cmd (mason--expand-child-file-name target prefix) (mason--wrapper-args))))
 
 (mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
@@ -1052,8 +1052,6 @@ If nil, WINDOWS-EXT defaults to `.exe'."
                 (desc (gethash "description" pkg))
                 (desc (replace-regexp-in-string "\n" " " desc))
                 (deprecated (gethash "deprecation" pkg))
-                (langs (gethash "languages" pkg))
-                (lang (if (length= langs 1) (seq-first langs) nil))
                 (installed (gethash name mason--installed)))
            (list (if deprecated (propertize name 'face 'mason-deprecated) name)
                  nil
