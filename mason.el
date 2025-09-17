@@ -157,15 +157,16 @@ CMD CALLBACK"
   (declare (indent defun))
   `(lambda () (mason--process ,cmd ,callback)))
 
-(cl-defun mason--process-sync (cmd)
-  "Run CMD with ARGS synchronously."
+(cl-defun mason--process-sync (cmd &optional &key in out)
+  "Run CMD with ARGS synchronously.
+See `call-process' INFILE and DESTINATION for IN and OUT."
   (let ((msg (mapconcat #'mason--quote cmd " "))
         buffer status success)
     (mason--msg "Calling `%s'" msg)
     (when mason-dry-run (cl-return-from mason--process-sync nil))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer
-      (setq status (apply #'call-process (car cmd) nil t nil (cdr cmd)))
+      (setq status (apply #'call-process (car cmd) in (or out t) nil (cdr cmd)))
       (setq success (zerop status))
       (mason--process-output!)
       (cons status success))))
@@ -438,57 +439,6 @@ OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
   (mason--msg "Downloading %s to %s" url newname)
   (or mason-dry-run (url-copy-file url newname ok-if-already-exists)))
 
-(defconst mason--extract-strategies
-  '(("\\.tar\\.gz\\'"  ("gzip" "tar")      "gzip -dc %i | tar -xpf - -C %o")
-    ("\\.tar\\.xz\\'"  ("xz" "tar")        "xz -dc %i | tar -xpf - -C %o")
-    ("\\.tgz\\'"       ("gzip" "tar")      "gzip -dc %i | tar -xpf - -C %o")
-    ("\\.tar\\.zst\\'" ("unzstd" "tar")    "unzstd -c %i | tar -xpf - -C %o")
-    ("\\.tzst\\'"      ("unzstd" "tar")    "unzstd -c %i | tar -xpf - -C %o")
-    ("\\.tar\\.bz2\\'" ("bunzip2" "tar")   "bunzip2 -c %i | tar -xpf - -C %o")
-    ("\\.tar\\'"       ("tar")             "tar -xpf %i -C %o")
-
-    ("\\.zip\\'"       ("unzip")           "unzip -o -d %o %i")
-    ("\\.vsix\\'"      ("unzip")           "unzip -o -d %o %i")
-    ("\\.7z\\'"        ("7z")              "7z x -aoa -o%o %i")
-
-    ("\\.gz\\'"        ("gzip")            "cd %o && gzip -dc %i > $(basename %i .gz)")
-    ("\\.z\\'"         ("gzip")            "cd %o && gzip -dc %i > $(basename %i .z)")
-    ("\\.bz2\\'"       ("bunzip2")         "cd %o && bunzip2 -c %i > $(basename %i .bz2)")
-    ("\\.xz\\'"        ("unxz")            "cd %o && unxz -c %i > $(basename %i .xz)")
-    ("\\.lz\\'"        ("lzip")            "cd %o && lzip -dc %i > $(basename %i .lz)")
-    ("\\.Z\\'"         ("uncompress")      "cd %o && uncompress -c %i > $(basename %i .Z)")
-    ("\\.dz\\'"        ("dictunzip")       "cd %o && dictunzip -c %i > $(basename %i .dz)")
-
-    ("\\.cpio\\'"      ("cpio")            "cd %o && cpio -idmv < %i")
-    ("\\.rpm\\'"       ("rpm2cpio" "cpio") "cd %o && rpm2cpio %i | cpio -idmv")
-    ("\\.ar\\'"        ("ar")              "cd %o && ar x %i")
-    ("\\.xar\\'"       ("xar")             "xar -x -f %i -C %o")))
-
-(defun mason--supported-archive (file)
-  "Return car of matching `mason--extract-strategies' if FILE is supported."
-  (car (seq-find (lambda (s) (string-match-p (car s) file))
-                 mason--extract-strategies)))
-
-(defun mason--extract (file &optional dest)
-  "Extract archive FILE into directory DEST.
-If DEST is nil, extract into directory named same as FILE."
-  (let* ((rule (seq-find (lambda (e) (string-match (car e) file))
-                         mason--extract-strategies))
-         (extension (nth 0 rule))
-         (_cmds (nth 1 rule))
-         (cmd (nth 2 rule)))
-    (when (null cmd)
-      (mason--err "Can't extract file archive %s" file))
-    (setq dest (or dest (replace-regexp-in-string extension "" file)))
-    (unless mason-dry-run
-      (make-directory dest t))
-    (let* ((default-directory dest)
-           (cmd (replace-regexp-in-string "%o" (shell-quote-argument dest) cmd))
-           (cmd (replace-regexp-in-string "%i" (shell-quote-argument file) cmd)))
-      (mason--process-sync (list shell-file-name
-                                 shell-command-switch
-                                 cmd)))))
-
 (defun mason--delete-directory (path &optional recursive ignore-dry-run)
   "Delete directory at PATH, optionally RECURSIVE.
 If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
@@ -515,8 +465,8 @@ See `mason--extract-strategies'."
         (let ((status (mason--download url tmp-file t)))
           (unless status
             (mason--err "Download failed: %s" url))
-          (if (mason--supported-archive filename)
-              (mason--extract tmp-file dest)
+          (if (mason--archive-name filename)
+              (mason--try-extract tmp-file dest)
             (unless mason-dry-run
               (when (or (directory-name-p dest) (file-directory-p dest))
                 (progn (make-directory dest t)
@@ -564,6 +514,85 @@ Delete existing file if OVERWRITE is not nil."
       (mason--delete-file path))
     (make-symbolic-link target path))
   (mason--msg "Made symlink at `%s' that links to `%s'" path target))
+
+
+;; Archive Extractors
+
+(defvar mason--extractors nil)
+
+(defmacro mason--extract! (name ext replace cmd &rest args)
+  "Define an archive extractor NAME for EXT with CMD.
+REPLACE occurence of EXT with the value if it not nil.
+See `mason--process-sync' for CMD and ARGS."
+  (declare (indent defun))
+  (let* ((fn-name (concat "mason--extract-" (symbol-name name)))
+         (fn (intern fn-name))
+         (regexp (macroexpand `(rx "." ,ext eos))))
+    `(progn
+       (defun ,fn (file dest)
+         (let* ((default-directory dest)
+                (out-file (replace-regexp-in-string ,regexp ,replace (file-name-nondirectory file)))
+                (out-file (mason--expand-child-file-name out-file dest)))
+           (ignore out-file)
+           (mason--process-sync ,cmd ,@args)))
+       (add-to-list 'mason--extractors '(,regexp ,replace ,fn)))))
+
+(defmacro mason--extract-stdio! (name ext replace cmd)
+  "Extractor for CMD that outputs to stdout.
+See `mason--extract!' for NAME, EXT, REPLACE."
+  (declare (indent defun))
+  `(mason--extract! ,name ,ext ,replace ,cmd :out `(:file ,out-file)))
+
+(defun mason--try-extract (file dest)
+  "Extract FILE to dir DEST, if it can be extracted.
+If not, simply move FILE to DEST."
+  (setq file (expand-file-name file)
+        dest (file-name-as-directory (expand-file-name dest)))
+  (let ((tmp-dir (make-temp-file "mason-extract-" 'dir)))
+    (unwind-protect
+        (let ((fn (nth 2 (seq-find (lambda (x) (string-match-p (car x) file)) mason--extractors))))
+          (when fn
+            (mason--msg "Extracting `%s' to `%s' using `%s'" file tmp-dir (symbol-name fn))
+            (unless mason-dry-run
+              (funcall fn file tmp-dir)
+              (let ((result (directory-files tmp-dir 'full directory-files-no-dot-files-regexp)))
+                (if (length< result 2)
+                    ;; single file, try extracting it again
+                    ;; file.tar.gz > file.tar > files
+                    (dolist (file2 result)
+                      (mason--try-extract file2 dest))
+                  ;; multiple files, can't be a multistage
+                  (make-directory dest t)
+                  (dolist (file2 result)
+                    (rename-file file2 dest))))))
+          (unless (or fn mason-dry-run)
+            (make-directory dest t)
+            (rename-file file dest)))
+      (mason--delete-directory tmp-dir t t))))
+
+(defun mason--archive-name (archive &optional return-orig)
+  "Return ARCHIVE file name, without the archive extension.
+If not a supported archive, return nil if RETURN-ORIG is nil,
+otherwise, return the original file name."
+  (let* ((rule (seq-find (lambda (x) (string-match-p (car x) archive)) mason--extractors))
+         (regexp (nth 0 rule))
+         (replace (nth 1 rule)))
+    (if rule (mason--archive-name (replace-regexp-in-string regexp replace archive) t)
+      (when return-orig archive))))
+
+(mason--extract! 7z  "7z"              "" `("7z" "x" "-aoa" ,(concat "-o" dest) ,file))
+(mason--extract! tar "tar"             "" `("tar" "-xpf" ,file "-C" ,dest))
+(mason--extract! zip (or "zip" "vsix") "" `("unzip" "-o" "-d" ,dest ,file))
+(mason--extract! xar "xar"             "" `("xar" "-x" "-f" ,file "-C" ,dest))
+
+(mason--extract-stdio! bzip2 "bz2"         ""     `("bunzip2"    "-c"  ,file))
+(mason--extract-stdio! dz    "dz"          ""     `("dictunzip"  "-c"  ,file))
+(mason--extract-stdio! gzip  (or "gz" "z") ""     `("gzip"       "-dc" ,file))
+(mason--extract-stdio! lzip  "lz"          ""     `("lzip"       "-dc" ,file))
+(mason--extract-stdio! xz    "xz"          ""     `("unxz"       "-c"  ,file))
+(mason--extract-stdio! Z     "Z"           ""     `("uncompress" "-c"  ,file))
+(mason--extract-stdio! zst   "zst"         ""     `("unzstd"     "-c"  ,file))
+(mason--extract-stdio! tzst  "tzst"        ".tar" `("unzstd"     "-c"  ,file))
 
 
 ;; Source Resolvers
@@ -780,9 +809,9 @@ See `mason--target-match'"
     (unless files (mason--err "No files"))
     (maphash (lambda (dest url)
                (setq url (mason--expand url id))
-               (let ((archive (mason--supported-archive dest)))
+               (let ((archive (mason--archive-name dest)))
                  (when archive
-                   (setq dest (replace-regexp-in-string archive "" dest))
+                   (setq dest archive)
                    (when (string= dest name)
                      (setq dest "."))))
                (setq dest (mason--expand-child-file-name dest prefix))
