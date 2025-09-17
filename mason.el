@@ -106,9 +106,9 @@ Defaults to 1 week."
     (when mason-dry-run (push :mason err) (push t err))
     (signal 'user-error (nreverse err))))
 
-(defun mason--quote (str)
-  "Quote STR if it contains spaces."
-  (if (string-match-p "[[:space:]]" str)
+(defun mason--quote (str &optional always)
+  "Quote STR if it contains spaces or if ALWAYS non nil."
+  (if (or always (string-match-p "[[:space:]]" str))
       (format "\"%s\"" (replace-regexp-in-string "\"" "\\\\\"" str))
     str))
 
@@ -126,16 +126,27 @@ Defaults to 1 week."
      (kill-buffer buffer)
      (unless success (error "Failed `%s'" msg))))
 
-(cl-defun mason--process (cmd &optional callback)
-  "Run process CMD asynchronously, with optional CALLBACK.
-CMD is argument list as specified in `make-process' :command."
+(cl-defun mason--process (cmd &optional &key env then)
+  "Run process CMD asynchronously.
+CMD is argument list as specified in `make-process' :command.
+ENV is alist of environment variable to add to `process-environment'.
+THEN is a function to call after process succeed."
   (declare (indent defun))
-  (let ((msg (mapconcat #'mason--quote cmd " "))
+  (let ((prog (car cmd))
+        (msg (mapconcat #'mason--quote cmd " "))
+        (process-environment process-environment)
         buffer)
+    (when env
+      (dolist (e (nreverse env))
+        (let ((k (car e)) (v (cdr e)))
+          (push (concat k "=" v) process-environment)
+          (setq msg (concat k "=" (mason--quote v) " " msg)))))
     (mason--msg "Calling `%s'" msg)
     (when mason-dry-run
-      (when (functionp callback) (funcall callback))
+      (when (functionp then) (funcall then))
       (cl-return-from mason--process nil))
+    (unless (executable-find prog)
+      (mason--err "Missing program `%s'" prog))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer (read-only-mode 1))
     (make-process
@@ -148,25 +159,28 @@ CMD is argument list as specified in `make-process' :command."
          (let* ((status (process-exit-status proc))
                 (success (zerop status)))
            (mason--process-output!)
-           (when (functionp callback)
-             (funcall callback))))))))
+           (when (functionp then)
+             (funcall then))))))))
 
-(defmacro mason--process-lamda (cmd &optional callback)
+(cl-defmacro mason--process-lamda (cmd &optional &key env then)
   "Wrap `mason--process' inside lambda.
-CMD CALLBACK"
+CMD ENV THEN"
   (declare (indent defun))
-  `(lambda () (mason--process ,cmd ,callback)))
+  `(lambda () (mason--process ,cmd :env ,env :then ,then)))
 
 (cl-defun mason--process-sync (cmd &optional &key in out)
   "Run CMD with ARGS synchronously.
 See `call-process' INFILE and DESTINATION for IN and OUT."
-  (let ((msg (mapconcat #'mason--quote cmd " "))
+  (let ((prog (car cmd))
+        (msg (mapconcat #'mason--quote cmd " "))
         buffer status success)
     (mason--msg "Calling `%s'" msg)
     (when mason-dry-run (cl-return-from mason--process-sync nil))
+    (unless (executable-find prog)
+      (mason--err "Missing program `%s'" prog))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer
-      (setq status (apply #'call-process (car cmd) in (or out t) nil (cdr cmd)))
+      (setq status (apply #'call-process prog in (or out t) nil (cdr cmd)))
       (setq success (zerop status))
       (mason--process-output!)
       (cons status success))))
@@ -477,9 +491,10 @@ See `mason--extract-strategies'."
       (when (file-directory-p tmp-dir)
         (ignore-errors (mason--delete-directory tmp-dir t t))))))
 
-(defun mason--make-wrapper (path &optional overwrite &rest content)
+(cl-defun mason--make-wrapper (path content &optional &key overwrite env)
   "Make a wrapper script at PATH with CONTENT.
-Delete existing file if OVERWRITE is not nil."
+Delete existing file if OVERWRITE is not nil.
+ENV is alist of additional environment variable to set"
   (let* ((windows (mason--is-windows t))
          (path (if windows (concat path ".bat") path))
          (c (mapconcat #'mason--quote content " ")))
@@ -488,18 +503,30 @@ Delete existing file if OVERWRITE is not nil."
       (when (and overwrite (file-exists-p path))
         (mason--delete-file path))
       (with-temp-file path
-        (if windows (insert "@echo off\r\n"
-                            "setlocal enabledelayedexpansion\r\n"
-                            "set \"args=\"\r\n"
-                            "for %%A in (%*) do (\r\n"
-                            "  set \"args=!args! \"%%~A\"\"\r\n"
-                            ")\r\n"
-                            (replace-regexp-in-string "\n" "\r\n" c))
-          (insert "#!/usr/bin/env sh\n"
-                  "exec " c)))
+        (cond
+         (windows
+          (insert "@echo off\r\n"
+                  "setlocal enabledelayedexpansion\r\n"
+                  "set \"args=\"\r\n"
+                  "for %%A in (%*) do (\r\n"
+                  "  set \"args=!args! \"%%~A\"\"\r\n"
+                  ")\r\n")
+          (dolist (e (nreverse env))
+            (insert "set " "\"" (car e) "=" (cdr e) "\"\r\n"))
+          (insert (replace-regexp-in-string "\n" "\r\n" c) "\r\n"))
+         ;; unix
+         (t (insert "#!/usr/bin/env bash\n")
+            (dolist (e (nreverse env))
+              (insert "export " (car e) "=" (mason--quote (cdr e) 't) "\n"))
+            (insert "exec " c "\n"))))
       (unless windows
         (set-file-modes path #o755)))
     (mason--msg "Made wrapper script at `%s'" path)))
+
+(defun mason--wrapper-env (env)
+  "Return wrapper script ENV reference."
+  (if (mason--is-windows t) (concat "%" env "%")
+    (concat "$" env)))
 
 (defun mason--wrapper-args ()
   "Arguments expansion for `mason--make-wrapper', $@ in unix."
@@ -607,10 +634,10 @@ otherwise, return the original file name."
   "Define a mason source resolver for TYPE.
 
 These keys declare support for PURL member:
-:NAMESPACE  none, optional or must
-:VERSION    none, optional or must
-:QUALIFIERS none or (\"q1\" \"q2\")
-:SUBPATH    none, optional or must
+:NAMESPACE  none, optional or must, defaults to none
+:VERSION    none, optional or must, defaults to must
+:QUALIFIERS none or (\"q1\" \"q2\"), defaults to none
+:SUBPATH    none, optional or must, defaults to none
 
 - If none, ID can not have the member.
 - If optional, ID can have the member.
@@ -619,7 +646,8 @@ These keys declare support for PURL member:
   qualifiers from the specified list.
 
 There also special keys:
-:KEYS is a list that decide what keys the SOURCE table are allowed
+:KEYS is a list that decide what keys the SOURCE table are allowed,
+      defaults to nil
 
 Inside BODY, one can reference:
 - NAME is the name of the mason entry.
@@ -739,7 +767,7 @@ See `mason--target-match'"
                               ,id-version)
                           `("--version" ,id-version))
                       ,@(when locked '("--locked")))
-      next)))
+      :then next)))
 
 (mason--source! pypi (:qualifiers ("extra")
                       :keys ("extra_packages"))
@@ -747,6 +775,7 @@ See `mason--target-match'"
     (when id-qualifiers
       (setq extra (gethash "extra" id-qualifiers)))
     (mason--process `("python" "-m" "venv" ,prefix)
+      :then
       (mason--process-lamda `("pip"
                               "--python" ,(mason--expand-child-file-name "bin/python" prefix)
                               "install"
@@ -754,7 +783,7 @@ See `mason--target-match'"
                               ,(if extra (format "%s[%s]==%s" id-name extra id-version)
                                  (format "%s==%s" id-name id-version))
                               ,@(seq-into (gethash "extra_packages" source) 'list))
-        next))))
+        :then next))))
 
 (mason--source! npm (:namespace optional
                      :keys ("extra_packages"))
@@ -764,7 +793,49 @@ See `mason--target-match'"
                       id-namespace (when id-namespace "/")
                       id-name "@" id-version)
                     ,@(seq-into (gethash "extra_packages" source) 'list))
-    next))
+    :then next))
+
+(mason--source! golang (:namespace must
+                        :subpath must)
+  (mason--process `("go" "install" ,(concat id-namespace "/" id-name "/" id-subpath "@" id-version))
+    :env `(("GOBIN" . ,prefix))
+    :then next))
+
+(mason--source! nuget ()
+  (mason--process `("dotnet" "tool" "install" ,id-name
+                    "--version" ,id-version
+                    "--tool-path" ,prefix)
+    :then next))
+
+(mason--source! luarocks (:qualifiers ("repository_url" "dev"))
+  (let (server dev)
+    (when id-qualifiers
+      (setq server (gethash "repository_url" id-qualifiers)
+            dev (string= "true" (gethash "dev" id-qualifiers ""))))
+    (mason--process `("luarocks" "install"
+                      "--tree" ,prefix
+                      ,@(when server `("--server" ,server))
+                      ,@(when dev '("--dev"))
+                      ,id-name ,id-version)
+      :then next)))
+
+(mason--source! gem (:keys ("extra_packages"))
+  (mason--process `("gem" "install"
+                    "--no-user-install"
+                    "--no-format-executable"
+                    "--install-dir" ,prefix
+                    "--bindir" ,(mason--expand-child-file-name "bin" prefix)
+                    "--no-document"
+                    ,(concat id-name ":" id-version)
+                    ,@(seq-into (gethash "extra_packages" source) 'list))
+    :env `(("GEM_HOME" . ,prefix))
+    :then next))
+
+;; (mason--source! opam ()
+;;   (mason--process `("opam"
+;;                     "install" ,(concat id-name "." id-version)
+;;                     "--destdir" ,prefix)
+;;     :then next))
 
 (defconst mason--github-file-regexp
   (concat "^"
@@ -846,37 +917,43 @@ Inside BODY, one can reference:
      (unless mason-dry-run
        (set-file-modes path (file-modes-symbolic-to-number "+x" (file-modes path))))))
 
-(defmacro mason--bin-executable! (name &optional windows-ext)
-  "Binary resolver NAME that link to binary path and adds WINDOWS-EXT on windows.
-If nil, WINDOWS-EXT defaults to `.exe'."
-  (setq windows-ext (or windows-ext ".exe"))
+(defmacro mason--bin-executable! (name dir &optional win-ext)
+  "Binary resolver NAME that link to binary path inside DIR.
+WIN-EXT is the extension to adds when on windows."
   `(mason--bin! ,name
-     (when (mason--is-windows t)
-       (setq path (concat path ,windows-ext)
-             target (concat target ,windows-ext)))
-     (mason--bin-link! path (mason--expand-child-file-name (concat "bin/" target) prefix))))
+     ,@(when win-ext
+         `((when (mason--is-windows t)
+             (setq path (concat path ,win-ext)
+                   target (concat target ,win-ext)))))
+     (if uninstall (mason--delete-file path)
+       (mason--link path (mason--expand-child-file-name (concat ,dir "/" target) prefix)))))
 
-(defmacro mason--bin-wrapper! (&rest content)
-  "Call `mason--make-wrapper' with CONTENT."
+(cl-defmacro mason--bin-wrapper! (content &optional &key env)
+  "Call `mason--make-wrapper' with CONTENT and ENV."
   `(if uninstall (mason--delete-file path)
-     (mason--make-wrapper path t ,@content)))
+     (mason--make-wrapper path ,content :overwrite t :env ,env)))
 
 (defmacro mason--bin-exec! (name &rest cmd)
-  "Binary resolver NAME that creates wrapper that calls target using CMD."
-  `(mason--bin! ,name (mason--bin-wrapper! ,@cmd (mason--expand-child-file-name target prefix) (mason--wrapper-args))))
+  "Binary resolver NAME that creates wrapper for DIR/CMD with ENV."
+  (unless (listp cmd) (setq cmd (list cmd)))
+  `(mason--bin! ,name
+     (mason--bin-wrapper! (list ,@cmd (mason--expand-child-file-name target prefix) (mason--wrapper-args)))))
 
 (mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
 
-(mason--bin-exec! dotnet "dotnet")
 (mason--bin-exec! exec)
+(mason--bin-exec! dotnet   "dotnet")
 (mason--bin-exec! java-jar "java" "-jar")
-(mason--bin-exec! node "node")
-(mason--bin-exec! php "php")
-(mason--bin-exec! python "python3")
-(mason--bin-exec! ruby "ruby")
+(mason--bin-exec! node     "node")
+(mason--bin-exec! php      "php")
+(mason--bin-exec! python   "python3")
+(mason--bin-exec! ruby     "ruby")
 
-(mason--bin-executable! npm ".cmd")
-(mason--bin-executable! cargo)
+(mason--bin-executable! npm      "bin" ".cmd")
+(mason--bin-executable! cargo    "bin" ".exe")
+(mason--bin-executable! golang   "."   ".exe")
+(mason--bin-executable! nuget    "."   ".exe")
+(mason--bin-executable! luarocks "bin" ".bat")
 
 (mason--bin! pypi
   (let (extension (bin-dir "bin/"))
@@ -889,9 +966,16 @@ If nil, WINDOWS-EXT defaults to `.exe'."
   (let ((python "bin/python"))
     (when (mason--is-cygwin) (setq python "bin/python.exe"))
     (when (mason--is-windows) (setq python "Scripts/python.exe"))
-    (mason--bin-wrapper! (mason--expand-child-file-name python prefix)
-                         "-m" target
-                         (mason--wrapper-args))))
+    (mason--bin-wrapper! `(,(mason--expand-child-file-name python prefix)
+                           "-m" ,target
+                           ,(mason--wrapper-args)))))
+
+(mason--bin! gem
+  (when (mason--is-windows t)
+    (setq target (concat target ".bat")))
+  (mason--bin-wrapper! `(,(mason--expand-child-file-name (concat "bin/" target) prefix)
+                         ,(mason--wrapper-args))
+                       :env `(("GEM_PATH" . ,(concat prefix path-separator (mason--wrapper-env "GEM_PATH"))))))
 
 
 ;; The Installer
