@@ -491,10 +491,11 @@ See `mason--extract-strategies'."
       (when (file-directory-p tmp-dir)
         (ignore-errors (mason--delete-directory tmp-dir t t))))))
 
-(cl-defun mason--make-wrapper (path content &optional &key overwrite env)
-  "Make a wrapper script at PATH with CONTENT.
+(cl-defun mason--make-shell (path content &optional &key overwrite env)
+  "Make a shell script at PATH with CONTENT.
 Delete existing file if OVERWRITE is not nil.
-ENV is alist of additional environment variable to set"
+ENV is alist of additional environment variable to set.
+Returns the modified PATH, added with .bat extension in Windows."
   (let* ((windows (mason--is-windows t))
          (path (if windows (concat path ".bat") path))
          (c (mapconcat #'mason--quote content " ")))
@@ -518,19 +519,34 @@ ENV is alist of additional environment variable to set"
          (t (insert "#!/usr/bin/env bash\n")
             (dolist (e (nreverse env))
               (insert "export " (car e) "=" (mason--quote (cdr e) 't) "\n"))
-            (insert "exec " c "\n"))))
+            (insert c "\n"))))
       (unless windows
         (set-file-modes path #o755)))
-    (mason--msg "Made wrapper script at `%s'" path)))
+    (mason--msg "Made wrapper script at `%s'" path)
+    path))
 
-(defun mason--wrapper-env (env)
-  "Return wrapper script ENV reference."
+(defun mason--shell-env (env)
+  "Return shell script ENV reference."
   (if (mason--is-windows t) (concat "%" env "%")
     (concat "$" env)))
 
-(defun mason--wrapper-args ()
-  "Arguments expansion for `mason--make-wrapper', $@ in unix."
+(defun mason--shell-exec ()
+  "Return exec on unix."
+  (if (mason--is-windows) "" "exec"))
+
+(defun mason--shell-args ()
+  "Arguments expansion for `mason--make-shell', $@ in unix."
   (if (mason--is-windows) "!args!" "\"$@\""))
+
+(defun mason--shell-run (path)
+  "Run shell at PATH synchronously."
+  (let* ((windows (mason--is-windows t))
+         (shell (if windows '("cmd.exe" "/c") '("bash" "-lc"))))
+    (when windows
+      (unless (string= "bat" (file-name-extension path))
+        (setq path (concat path ".bat")))
+      (setq path (subst-char-in-string ?/ ?\\ path)))
+    (mason--process-sync `(,@shell ,path))))
 
 (defun mason--link (path target &optional overwrite)
   "Create a symbolic link at PATH to TARGET.
@@ -831,11 +847,26 @@ See `mason--target-match'"
     :env `(("GEM_HOME" . ,prefix))
     :then next))
 
-;; (mason--source! opam ()
-;;   (mason--process `("opam"
-;;                     "install" ,(concat id-name "." id-version)
-;;                     "--destdir" ,prefix)
-;;     :then next))
+(mason--source! opam ()
+  (mason--process `("opam" "switch" "create" ,prefix
+                    "--yes" "--assume-depexts"
+                    "--packages" ,(concat id-name "." id-version))
+    :then next))
+
+(mason--source! openvsx (:namespace must
+                         :keys ("download"))
+  (let* ((download (gethash "download" source))
+         (_ (mason--expect-hash-key download "file"))
+         (file (gethash "file" download)))
+    (unless file (mason--err "Missing file to download"))
+    (setq file (mason--expand file id))
+    (unless (string= "vsix" (file-name-extension file))
+      (mason--err "File `%s' not a VSCode extension" file))
+    (mason--async
+      (mason--download-maybe-extract
+       (concat "https://open-vsx.org/api/" id-namespace "/" id-name "/" id-version "/file/" file)
+       prefix)
+      (funcall next))))
 
 (defconst mason--github-file-regexp
   (concat "^"
@@ -929,15 +960,15 @@ WIN-EXT is the extension to adds when on windows."
        (mason--link path (mason--expand-child-file-name (concat ,dir "/" target) prefix)))))
 
 (cl-defmacro mason--bin-wrapper! (content &optional &key env)
-  "Call `mason--make-wrapper' with CONTENT and ENV."
+  "Call `mason--make-shell' with CONTENT and ENV."
   `(if uninstall (mason--delete-file path)
-     (mason--make-wrapper path ,content :overwrite t :env ,env)))
+     (mason--make-shell path ,content :overwrite t :env ,env)))
 
 (defmacro mason--bin-exec! (name &rest cmd)
   "Binary resolver NAME that creates wrapper for DIR/CMD with ENV."
   (unless (listp cmd) (setq cmd (list cmd)))
   `(mason--bin! ,name
-     (mason--bin-wrapper! (list ,@cmd (mason--expand-child-file-name target prefix) (mason--wrapper-args)))))
+     (mason--bin-wrapper! (list (mason--shell-exec) ,@cmd (mason--expand-child-file-name target prefix) (mason--shell-args)))))
 
 (mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
 
@@ -949,11 +980,12 @@ WIN-EXT is the extension to adds when on windows."
 (mason--bin-exec! python   "python3")
 (mason--bin-exec! ruby     "ruby")
 
-(mason--bin-executable! npm      "bin" ".cmd")
-(mason--bin-executable! cargo    "bin" ".exe")
-(mason--bin-executable! golang   "."   ".exe")
-(mason--bin-executable! nuget    "."   ".exe")
-(mason--bin-executable! luarocks "bin" ".bat")
+(mason--bin-executable! npm      "bin"       ".cmd")
+(mason--bin-executable! cargo    "bin"       ".exe")
+(mason--bin-executable! golang   "."         ".exe")
+(mason--bin-executable! nuget    "."         ".exe")
+(mason--bin-executable! luarocks "bin"       ".bat")
+(mason--bin-executable! opam     "_opam/bin" ".exe")
 
 (mason--bin! pypi
   (let (extension (bin-dir "bin/"))
@@ -966,16 +998,18 @@ WIN-EXT is the extension to adds when on windows."
   (let ((python "bin/python"))
     (when (mason--is-cygwin) (setq python "bin/python.exe"))
     (when (mason--is-windows) (setq python "Scripts/python.exe"))
-    (mason--bin-wrapper! `(,(mason--expand-child-file-name python prefix)
+    (mason--bin-wrapper! `(,(mason--shell-exec)
+                           ,(mason--expand-child-file-name python prefix)
                            "-m" ,target
-                           ,(mason--wrapper-args)))))
+                           ,(mason--shell-args)))))
 
 (mason--bin! gem
   (when (mason--is-windows t)
     (setq target (concat target ".bat")))
-  (mason--bin-wrapper! `(,(mason--expand-child-file-name (concat "bin/" target) prefix)
-                         ,(mason--wrapper-args))
-                       :env `(("GEM_PATH" . ,(concat prefix path-separator (mason--wrapper-env "GEM_PATH"))))))
+  (mason--bin-wrapper! `(,(mason--shell-exec)
+                         ,(mason--expand-child-file-name (concat "bin/" target) prefix)
+                         ,(mason--shell-args))
+                       :env `(("GEM_PATH" . ,(concat prefix path-separator (mason--shell-env "GEM_PATH"))))))
 
 
 ;; The Installer
