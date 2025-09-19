@@ -868,6 +868,18 @@ See `mason--target-match'"
        prefix)
       (funcall next))))
 
+(mason--source! composer (:namespace must)
+  (unless mason-dry-run (make-directory prefix t))
+  (mason--process `("composer" "init"
+                    "--stability" "stable"
+                    "--no-interaction"
+                    "--working-dir" ,prefix)
+    :then
+    (mason--process-lamda `("composer" "require"
+                            "--working-dir" ,prefix
+                            "--" ,(concat id-namespace "/" id-name ":" id-version))
+      :then next)))
+
 (defconst mason--github-file-regexp
   (concat "^"
           "\\([A-ZA-Z0-9_.-]+\\)"  ; 1. file path
@@ -980,12 +992,13 @@ WIN-EXT is the extension to adds when on windows."
 (mason--bin-exec! python   "python3")
 (mason--bin-exec! ruby     "ruby")
 
-(mason--bin-executable! npm      "bin"       ".cmd")
-(mason--bin-executable! cargo    "bin"       ".exe")
-(mason--bin-executable! golang   "."         ".exe")
-(mason--bin-executable! nuget    "."         ".exe")
-(mason--bin-executable! luarocks "bin"       ".bat")
-(mason--bin-executable! opam     "_opam/bin" ".exe")
+(mason--bin-executable! npm      "bin"        ".cmd")
+(mason--bin-executable! cargo    "bin"        ".exe")
+(mason--bin-executable! golang   "."          ".exe")
+(mason--bin-executable! nuget    "."          ".exe")
+(mason--bin-executable! luarocks "bin"        ".bat")
+(mason--bin-executable! opam     "_opam/bin"  ".exe")
+(mason--bin-executable! composer "vendor/bin" ".bat")
 
 (mason--bin! pypi
   (let (extension (bin-dir "bin/"))
