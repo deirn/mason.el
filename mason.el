@@ -92,19 +92,38 @@ Defaults to 1 week."
       (read-only-mode 1))
     formatted))
 
-(defun mason--err (format &rest args)
-  "Call (mason--msg FORMAT ARGS) before throwing `error'."
-  (apply #'mason--msg (concat "ERROR: " format) args)
-  (let ((err (list (apply #'format-message format args))))
-    (when mason-dry-run (push :mason err) (push t err))
-    (signal 'error (nreverse err))))
+(defmacro mason--run-at-main (&rest body)
+  "Run BODY at main thread."
+  (declare (indent defun))
+  `(let ((fn (lambda () ,@body)))
+     (if mason-dry-run
+         (funcall fn)
+       (run-at-time 0 nil fn))))
 
-(defun mason--uerr (format &rest args)
-  "Call (mason--msg FORMAT ARGS) before throwing `user-error'."
-  (apply #'mason--msg (concat "USER-ERROR: " format) args)
-  (let ((err (list (apply #'format-message format args))))
-    (when mason-dry-run (push :mason err) (push t err))
-    (signal 'user-error (nreverse err))))
+(defmacro mason--wrap-error (fn success &rest body)
+  "Call FN with argument nil when BODY errors.
+If SUCCESS, also call FN with argument t when BODY succeeded."
+  (declare (indent defun))
+  `(let* ((fn ,fn)
+          (fnp (functionp fn)))
+     (condition-case err
+         (progn
+           ,@body
+           ,(when success
+              `(when fnp (funcall fn t))))
+       (error
+        (mason--msg "ERROR: %s" (error-message-string err))
+        (when fnp (funcall fn nil))))))
+
+(defmacro mason--wrap-error-at-main (fn success &rest body)
+  "`mason--wrap-error' with `mason--run-at-main'.
+FN SUCCESS BODY."
+  (declare (indent defun))
+  `(let ((fn ,fn))
+     (mason--wrap-error
+       (lambda (x)
+         (when (functionp fn) (run-at-time 0 nil (lambda () (funcall fn x)))))
+       ,success ,@body)))
 
 (defun mason--quote (str &optional always)
   "Quote STR if it contains spaces or if ALWAYS non nil."
@@ -142,16 +161,13 @@ Defaults to 1 week."
           (read-only-mode 1))
         (if moving (goto-char (process-mark proc)))))))
 
-(cl-defun mason--process (cmd &optional &key env cwd then on-failure)
+(cl-defun mason--process (cmd &optional &key env cwd then)
   "Run process CMD asynchronously.
 CMD is argument list as specified in `make-process' :command.
 ENV is alist of environment variable to add to `process-environment'.
 CWD is the working directory.
 THEN is a function to call after process succeed.
-ON-FAILURE decides whether to also call THEN when CMD failed.
-
-When ON-FAILURE is non nil, THEN needs to accept a parameter,
-indicating if the process succeeded."
+THEN needs to accept a parameter, indicating if the process succeeded."
   (declare (indent defun))
   (let ((prog (car cmd))
         (msg (mapconcat #'mason--quote cmd " "))
@@ -165,12 +181,10 @@ indicating if the process succeeded."
     (if cwd (mason--msg "Calling `%s' at `%s'" msg cwd)
       (mason--msg "Calling `%s'" msg))
     (when mason-dry-run
-      (when (functionp then)
-        (if on-failure (funcall then t)
-          (funcall then)))
+      (when (functionp then) (funcall then t))
       (cl-return-from mason--process nil))
     (unless (executable-find prog)
-      (mason--err "Missing program `%s'" prog))
+      (error "Missing program `%s'" prog))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer (read-only-mode 1))
     (let ((default-directory (or (when cwd (expand-file-name cwd))
@@ -186,15 +200,15 @@ indicating if the process succeeded."
            (let* ((status (process-exit-status proc))
                   (success (zerop status)))
              (mason--process-output!)
-             (when (functionp then)
-               (if on-failure (funcall then success)
-                 (when success (funcall then))))
-             (unless success (mason--err "Failed `%s'" msg)))))))))
+             (when (functionp then) (funcall then success))
+             (unless success (error "Failed `%s'" msg)))))))))
 
-(cl-defmacro mason--process-lamda (cmd &optional &key env cwd then on-failure)
-  "Wrap `mason--process' inside lambda.  CMD ENV CWD THEN ON-FAILURE."
+(cl-defmacro mason--process2 (cmd &optional &key env cwd then)
+  "To be used as `mason--process' :then.  CMD ENV CWD THEN ON-FAILURE."
   (declare (indent defun))
-  `(lambda () (mason--process ,cmd :env ,env :cwd ,cwd :then ,then :on-failure ,on-failure)))
+  `(lambda (success)
+     (if (not success) (funcall ,then nil)
+       (mason--process ,cmd :env ,env :cwd ,cwd :then ,then))))
 
 (cl-defun mason--process-sync (cmd &optional &key in out)
   "Run CMD with ARGS synchronously.
@@ -205,22 +219,14 @@ See `call-process' INFILE and DESTINATION for IN and OUT."
     (mason--msg "Calling `%s'" msg)
     (when mason-dry-run (cl-return-from mason--process-sync nil))
     (unless (executable-find prog)
-      (mason--err "Missing program `%s'" prog))
+      (error "Missing program `%s'" prog))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer
       (setq status (apply #'call-process prog in (or out t) nil (cdr cmd)))
       (setq success (zerop status))
       (mason--process-output!)
-      (unless success (mason--err "Failed `%s'" msg))
+      (unless success (error "Failed `%s'" msg))
       (cons status success))))
-
-(defmacro mason--run-at-main (&rest body)
-  "Run BODY at main thread."
-  (declare (indent defun))
-  `(let ((fn (lambda () ,@body)))
-     (if mason-dry-run
-         (funcall fn)
-       (run-at-time 0 nil fn))))
 
 (defmacro mason--async (&rest body)
   "Run BODY on separate thread."
@@ -314,7 +320,7 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
 Throws error when resulting path is not inside PARENT."
   (let ((res (expand-file-name path parent)))
     (unless (mason--path-descendant-p res parent)
-      (mason--err "Path `%s' is not inside `%s'" res parent))
+      (error "Path `%s' is not inside `%s'" res parent))
     res))
 
 (defmacro mason--make-hash (&rest kvs)
@@ -324,6 +330,13 @@ Throws error when resulting path is not inside PARENT."
      ,@(cl-loop for (k v) on kvs by #'cddr
                 collect `(puthash ,k ,v h))
      h))
+
+(defun mason--merge-hash (&rest tables)
+  "Merge hash TABLES to one."
+  (let ((h (mason--make-hash)))
+    (dolist (table tables)
+      (maphash (lambda (k v) (puthash k v h)) table))
+    h))
 
 (defun mason--hash-keys (table)
   "Get list of keys from TABLE."
@@ -337,7 +350,7 @@ Throws error when resulting path is not inside PARENT."
   (maphash
    (lambda (k _v)
      (unless (member k keys)
-       (mason--err "Unexpected key `%s' in table `%s'"
+       (error "Unexpected key `%s' in table `%s'"
                    k (json-encode table))))
    table))
 
@@ -365,30 +378,29 @@ https://github.com/package-url/purl-spec"
          purl)
     (let ((tn-split (s-split-up-to "/" path 1 t)))
       (unless (length= tn-split 2)
-        (mason--err "Failed to parse PURL: `%s' does not contain type and name"))
+        (error "Failed to parse PURL: `%s' does not contain type and name"))
       (setq type (nth 0 tn-split)
             name (nth 1 tn-split)))
     (let ((ns-split (s-split-up-to "/" name 1 t)))
       (when (length= ns-split 2)
-        (setq namespace (url-unhex-string (nth 0 ns-split))
+        (setq namespace (nth 0 ns-split)
               name (nth 1 ns-split))))
     (let ((nv-split (s-split-up-to "@" name 1 t)))
       (setq name (nth 0 nv-split)
             version (nth 1 nv-split)))
-    (setq name (url-unhex-string name))
     (setq purl (mason--make-hash
-                 "raw" string
-                 "scheme" scheme
-                 "type" type
-                 "namespace" namespace
-                 "name" name
-                 "version" version
+                 "raw"        (when string    (url-unhex-string string))
+                 "scheme"     (when scheme    (url-unhex-string scheme))
+                 "type"       (when type      (url-unhex-string type))
+                 "namespace"  (when namespace (url-unhex-string namespace))
+                 "name"       (when name      (url-unhex-string name))
+                 "version"    (when version   (url-unhex-string version))
                  "qualifiers" nil
-                 "subpath" subpath))
+                 "subpath"    (when subpath   (url-unhex-string subpath))))
     (when q-str
       (setq qualifiers (mason--make-hash))
       (dolist (e (url-parse-query-string q-str))
-        (puthash (nth 0 e) (nth 1 e) qualifiers))
+        (puthash (url-unhex-string (nth 0 e)) (url-unhex-string (nth 1 e)) qualifiers))
       (puthash "qualifiers" qualifiers purl))
     purl))
 
@@ -411,7 +423,7 @@ https://github.com/package-url/purl-spec"
       (mason--make-hash
         "type" (or (match-string 2 bin) "path")
         "path" (match-string 3 bin))
-    (mason--err "Unsupported bin `%s'" bin)))
+    (error "Unsupported bin `%s'" bin)))
 
 (defun mason--unquote-string-or-nil (s)
   "If S is a double-quoted string, return its unescaped contents; otherwise nil."
@@ -450,26 +462,26 @@ https://github.com/package-url/purl-spec"
                     (var (nth 0 pipes))
                     (ops (if (length< pipes 2) nil (seq-subseq pipes 1))))
                (when (null pipes)
-                 (mason--err "Empty expansion expression in `%s'" str))
+                 (error "Empty expansion expression in `%s'" str))
                (unless (string-match "^[A-Za-z0-9_.-]+$" var)
-                 (mason--err "Unsupported expansion variable `%s' in `%s'" var str))
+                 (error "Unsupported expansion variable `%s' in `%s'" var str))
                (let ((path (split-string var "\\."))
                      (tree ctx))
                  (dolist (p path)
                    (setq tree (when tree (gethash p tree))))
                  (unless tree
-                   (mason--err "Unable to expand variable `%s' in `%s' with ctx `%s'" var str (json-serialize ctx)))
+                   (error "Unable to expand variable `%s' in `%s' with ctx `%s'" var str (json-serialize ctx)))
                  (setq var tree))
                (dolist (op ops)
                  (cond
                   ((string-prefix-p "strip_prefix " op)
                    (let* ((prefix (mason--unquote-string-or-nil (string-trim (substring op (length "strip_prefix "))))))
                      (unless prefix
-                       (mason--err "Unable to expand `%s': strip_prefix can only accept one argument of type string" str))
+                       (error "Unable to expand `%s': strip_prefix can only accept one argument of type string" str))
                      (unless (string-prefix-p prefix var)
-                       (mason--err "Unable to expand `%s': strip_prefix: `%s' is not prefixed with `%s'" str var prefix))
+                       (error "Unable to expand `%s': strip_prefix: `%s' is not prefixed with `%s'" str var prefix))
                      (setq var (substring var (length prefix)))))
-                  (t (mason--err "Unable to expand `%s': unsupported operation `%s'" str op))))
+                  (t (error "Unable to expand `%s': unsupported operation `%s'" str op))))
                (setq expanded t)
                var)))))
     (when expanded
@@ -507,7 +519,7 @@ See `mason--extract-strategies'."
     (unwind-protect
         (let ((status (mason--download url tmp-file t)))
           (unless status
-            (mason--err "Download failed: %s" url))
+            (error "Download failed: %s" url))
           (if (mason--archive-name filename)
               (mason--try-extract tmp-file dest)
             (unless mason-dry-run
@@ -709,46 +721,46 @@ Inside BODY, one can reference:
           (cond
            ((eq namespace 'none)
             `(when id-namespace
-               (mason--err "`%s' must not have namespace" id-raw)))
+               (error "`%s' must not have namespace" id-raw)))
            ((eq namespace 'optional)
             '(ignore))
            ((eq namespace 'must)
             `(unless id-namespace
-               (mason--err "`%s' must have namespace" id-raw)))
+               (error "`%s' must have namespace" id-raw)))
            (t (error "`%s': :namespace support must be one of %S" fn-name values))))
          ;; version
          (p-version
           (cond
            ((eq version 'none)
             `(when id-version
-               (mason--err "`%s' must not have version" id-raw)))
+               (error "`%s' must not have version" id-raw)))
            ((eq version 'optional)
             '(ignore))
            ((eq version 'must)
             `(unless id-version
-               (mason--err "`%s' must have version" id-raw)))
+               (error "`%s' must have version" id-raw)))
            (t (error "`%s': :version support must be one of %S" fn-name values))))
          ;; subpath
          (p-subpath
           (cond
            ((eq subpath 'none)
             `(when id-subpath
-               (mason--err "`%s' must not have subpath" id-raw)))
+               (error "`%s' must not have subpath" id-raw)))
            ((eq subpath 'optional)
             '(ignore))
            ((eq subpath 'must)
             `(unless id-subpath
-               (mason--err "`%s' must have subpath" id-raw)))
+               (error "`%s' must have subpath" id-raw)))
            (t (error "`%s': :subpath support must be one of %S" fn-name values))))
          ;; qualifiers
          (p-qualifiers
           (cond
            ((eq qualifiers 'none)
             `(when id-qualifiers
-               (mason--err "`%s' must not have qualifiers" id-raw)))
+               (error "`%s' must not have qualifiers" id-raw)))
            ((and (listp qualifiers) (not (seq-empty-p qualifiers)))
             `(unless (seq-every-p (lambda (q) (member q m-qualifiers)) (mason--hash-keys id-qualifiers))
-               (mason--err "`%s' must only have qualifiers of key %S" id-raw m-qualifiers)))
+               (error "`%s' must only have qualifiers of key %S" id-raw m-qualifiers)))
            (t (error "`%s': :qualifiers must be none or list" fn-name)))))
     ;; resulting function
     `(defun ,(intern fn-name) (name prefix id source spec next)
@@ -766,18 +778,19 @@ Inside BODY, one can reference:
          (let ((platforms (gethash "supported_platforms" source)))
            (when platforms
              (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
-               (mason--err "Package `%s' only supports platforms `%s'" name (json-serialize platforms)))))
+               (error "Package `%s' only supports platforms `%s'" name (json-serialize platforms)))))
          ,p-namespace
          ,p-version
          ,p-subpath
          ,p-qualifiers
-         ,@body))))
+         ,@body
+         t))))
 
 (defun mason--source-target (source key)
   "Get value that with matching target from SOURCE[KEY].
 See `mason--target-match'"
   (let ((val (gethash key source)))
-    (unless val (mason--err "Missing `%s'" key))
+    (unless val (error "Missing `%s'" key))
     (when (vectorp val)
       (setq val
             (seq-find
@@ -791,7 +804,7 @@ See `mason--target-match'"
                                t))
                            target)))
              val))
-      (unless val (mason--err "No matching `%s' for target %s" key mason--target))
+      (unless val (error "No matching `%s' for target %s" key mason--target))
       (puthash key val source))
     val))
 
@@ -799,7 +812,7 @@ See `mason--target-match'"
   "BUILD package in PREFIX, then call NEXT.
 Expand BUILD[env] with ID."
   (let* ((run (gethash "run" build))
-         (_ (unless run (mason--err "Nothing to run")))
+         (_ (unless run (error "Nothing to run")))
          (env (gethash "env" build))
          (script (mason--make-shell (make-temp-file "mason-source-build-") run))
          env-alist)
@@ -812,8 +825,7 @@ Expand BUILD[env] with ID."
       :env env-alist :cwd prefix
       :then (lambda (success)
               (mason--delete-file script t)
-              (when success (funcall next)))
-      :on-failure t)))
+              (funcall next success)))))
 
 (defun mason--source-uninstall (_name prefix _id _source _spec next)
   "A uninstall source \"resolver\", deletes the PREFIX and call NEXT."
@@ -846,13 +858,13 @@ Expand BUILD[env] with ID."
       (setq extra (gethash "extra" id-qualifiers)))
     (mason--process `("python" "-m" "venv" ,prefix)
       :then
-      (mason--process-lamda `("pip"
-                              "--python" ,(mason--expand-child-file-name "bin/python" prefix)
-                              "install"
-                              "--prefix" ,prefix
-                              ,(if extra (format "%s[%s]==%s" id-name extra id-version)
-                                 (format "%s==%s" id-name id-version))
-                              ,@(seq-into (gethash "extra_packages" source) 'list))
+      (mason--process2 `("pip"
+                         "--python" ,(mason--expand-child-file-name "bin/python" prefix)
+                         "install"
+                         "--prefix" ,prefix
+                         ,(if extra (format "%s[%s]==%s" id-name extra id-version)
+                            (format "%s==%s" id-name id-version))
+                         ,@(seq-into (gethash "extra_packages" source) 'list))
         :then next))))
 
 (mason--source! npm (:namespace optional)
@@ -910,18 +922,18 @@ Expand BUILD[env] with ID."
 
 (mason--source! openvsx (:namespace must)
   (let* ((download (gethash "download" source))
-         (_ (unless download (mason--err "Missing `download' key")))
+         (_ (unless download (error "Missing `download' key")))
          (_ (mason--expect-hash-key download "file"))
          (file (gethash "file" download)))
-    (unless file (mason--err "Missing file to download"))
+    (unless file (error "Missing file to download"))
     (setq file (mason--expand file id))
     (unless (string= "vsix" (file-name-extension file))
-      (mason--err "File `%s' not a VSCode extension" file))
+      (error "File `%s' not a VSCode extension" file))
     (mason--async
-      (mason--download-maybe-extract
-       (concat "https://open-vsx.org/api/" id-namespace "/" id-name "/" id-version "/file/" file)
-       prefix)
-      (funcall next))))
+      (mason--wrap-error-at-main next t
+        (mason--download-maybe-extract
+         (concat "https://open-vsx.org/api/" id-namespace "/" id-name "/" id-version "/file/" file)
+         prefix)))))
 
 (mason--source! composer (:namespace must)
   (unless mason-dry-run (make-directory prefix t))
@@ -930,9 +942,9 @@ Expand BUILD[env] with ID."
                     "--no-interaction"
                     "--working-dir" ,prefix)
     :then
-    (mason--process-lamda `("composer" "require"
-                            "--working-dir" ,prefix
-                            "--" ,(concat id-namespace "/" id-name ":" id-version))
+    (mason--process2 `("composer" "require"
+                       "--working-dir" ,prefix
+                       "--" ,(concat id-namespace "/" id-name ":" id-version))
       :then next)))
 
 (defconst mason--github-file-regexp
@@ -949,19 +961,19 @@ Expand BUILD[env] with ID."
         (has-build (hash-table-contains-p "build" source)))
     (cond
      ((and has-asset has-build)
-      (mason--err "Source `%s' has both `asset' and `build' recipe" id-raw))
+      (error "Source `%s' has both `asset' and `build' recipe" id-raw))
      (has-asset
       (let* ((asset (mason--source-target source "asset"))
              (files (gethash "file" asset))
              tasks)
-        (unless files (mason--err "No files"))
+        (unless files (error "No files"))
         (unless (vectorp files) (setq files (vector files)))
         (setq tasks
               (mapcar
                (lambda (file)
                  (setq file (mason--expand file id))
                  (unless (string-match mason--github-file-regexp file)
-                   (mason--err "Unsupported file asset `%s'" file))
+                   (error "Unsupported file asset `%s'" file))
                  (let* ((file-path (match-string 1 file))
                         (file-url (concat "https://github.com/" id-namespace "/" id-name "/releases/download/" id-version "/" file-path))
                         (extract-path (match-string 3 file))
@@ -970,22 +982,24 @@ Expand BUILD[env] with ID."
                      (mason--download-maybe-extract file-url extract-dest))))
                files))
         (mason--async
-          (dolist (task tasks)
-            (funcall task))
-          (mason--run-at-main (funcall next)))))
+          (mason--wrap-error-at-main next t
+            (dolist (task tasks)
+              (funcall task))))))
      (has-build
       (let ((build (mason--source-target source "build")))
         (mason--process `("git" "clone" "--depth" "1" "--quiet"
                           ,(concat "https://github.com/" id-namespace "/" id-name ".git")
                           ,prefix)
           :then
-          (mason--process-lamda `("git" "fetch" "--depth" "1" "--quiet" "origin" ,id-version)
+          (mason--process2 `("git" "fetch" "--depth" "1" "--quiet" "origin" ,id-version)
             :cwd prefix
             :then
-            (mason--process-lamda `("git" "checkout" "--quiet" "FETCH_HEAD")
+            (mason--process2 `("git" "checkout" "--quiet" "FETCH_HEAD")
               :cwd prefix
-              :then (lambda () (mason--source-build build id prefix next)))))))
-     (t (mason--err "Source `%s' has no `asset' nor `build'" id-raw)))))
+              :then (lambda (success)
+                      (if success (mason--source-build build id prefix next)
+                        (funcall next nil))))))))
+     (t (error "Source `%s' has no `asset' nor `build'" id-raw)))))
 
 (mason--source! generic (:namespace optional
                          :version optional)
@@ -993,12 +1007,12 @@ Expand BUILD[env] with ID."
         (has-build (hash-table-contains-p "build" source)))
     (cond
      ((and has-download has-build)
-      (mason--err "Source `%s' has both `asset' and `build' recipe" id-raw))
+      (error "Source `%s' has both `asset' and `build' recipe" id-raw))
      (has-download
       (let* ((download (mason--source-target source "download"))
              (files (gethash "files" download))
              tasks)
-        (unless files (mason--err "No files"))
+        (unless files (error "No files"))
         (maphash (lambda (dest url)
                    (setq url (mason--expand url id))
                    (let ((archive (mason--archive-name dest)))
@@ -1010,13 +1024,13 @@ Expand BUILD[env] with ID."
                    (push (lambda () (mason--download-maybe-extract url dest)) tasks))
                  files)
         (mason--async
-          (dolist (task (nreverse tasks))
-            (funcall task))
-          (mason--run-at-main (funcall next)))))
+          (mason--wrap-error-at-main next t
+            (dolist (task tasks)
+              (funcall task))))))
      (has-build
       (let ((build (mason--source-target source "build")))
         (mason--source-build build id prefix next)))
-     (t (mason--err "Source `%s' has no `download' nor `build'" id-raw)))))
+     (t (error "Source `%s' has no `download' nor `build'" id-raw)))))
 
 
 ;; Binary Resolvers
@@ -1111,15 +1125,16 @@ WIN-EXT is the extension to adds when on windows."
 
 (defvar mason--registry 'nan)
 (defvar mason--installed 'nan)
+(defvar mason--pending (mason--make-hash))
 
 (defun mason--assert-ensured ()
   "Assert if `mason--registry' is available."
   (when (or (eq mason--registry 'nan)
             (eq mason--installed 'nan))
-    (mason--err "Call `mason-ensure' on your init.el"))
+    (error "Call `mason-ensure' on your init.el"))
   (when (or (eq mason--registry 'on-process)
             (eq mason--installed 'on-process))
-    (mason--err "Mason is not ready yet")))
+    (error "Mason is not ready yet")))
 
 (defvar mason--package-list nil)
 (defun mason--get-package-list ()
@@ -1397,30 +1412,36 @@ If INTERACTIVE, ask for PACKAGE."
     (error "Invalid package `%s'" package)))
 
 ;;;###autoload
-(defun mason-install (package &optional force interactive)
+(defun mason-install (package &optional force interactive callback)
   "Install a Mason PACKAGE.
 If FORCE non nil delete existing installation, if exists.
-If INTERACTIVE, ask for PACKAGE and FORCE."
+If INTERACTIVE, ask for PACKAGE and FORCE.
+
+CALLBACK is a function that will be called with one argument,
+indicating the package success to install."
   (interactive '(nil nil t))
   (if (and package (not interactive))
-      (mason--install-0 package force nil nil)
+      (mason--install-0 package force nil nil callback)
     (mason--ask-package "Mason Install"
-                        (lambda (p) (mason--install-0 p nil t nil)))))
+                        (lambda (p) (mason--install-0 p nil t nil callback)))))
 
 ;;;###autoload
-(defun mason-uninstall (package &optional interactive)
+(defun mason-uninstall (package &optional interactive callback)
   "Uninstall a Mason PACKAGE.
-If INTERACTIVE, ask for PACKAGE"
+If INTERACTIVE, ask for PACKAGE.
+
+CALLBACK is a function that will be called with one argument,
+indicating the package success to uninstall."
   (interactive '(nil t))
   (mason--with-installed
     (if (and package (not interactive))
-        (mason--install-0 package nil nil t)
+        (mason--install-0 package nil nil t callback)
       (mason--ask-package "Mason Uninstall"
-                          (lambda (p) (mason--install-0 p nil t t))))))
+                          (lambda (p) (mason--install-0 p nil t t callback))))))
 
-(defun mason--install-0 (package force interactive uninstall)
+(defun mason--install-0 (package force interactive uninstall callback)
   "Implementation of `mason-install' and `mason-uninstall'.
-Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
+Args: PACKAGE FORCE INTERACTIVE UNINSTALL CALLBACK."
   (let* ((spec (gethash package mason--registry))
          (spec (read (prin1-to-string spec))) ; deep copy
          (name (gethash "name" spec))
@@ -1434,9 +1455,11 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
          (source-type (if uninstall "uninstall" (gethash "type" source-id)))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; links
+         (spec-id-ctx (mason--merge-hash spec source-id))
          (bin (gethash "bin" spec))
          (share (gethash "share" spec))
-         (opt (gethash "opt" spec)))
+         (opt (gethash "opt" spec))
+         callback2)
     (mason--expect-hash-key spec
                             "name" "description" "homepage" "deprecation"
                             "licenses" "languages" "categories"
@@ -1450,63 +1473,69 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL."
     (if uninstall (mason--msg "Uninstalling package `%s'" name)
       (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
     (when (not (fboundp source-fn))
-      (mason--err "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
+      (error "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
     (when (and (not uninstall)
                (not mason-dry-run)
                (file-directory-p package-dir)
                (not (directory-empty-p package-dir)))
       (if (not interactive)
           (if force (mason--delete-directory package-dir t)
-            (mason--err "Directory %s already exists" package-dir))
+            (error "Directory %s already exists" package-dir))
         (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
             (mason--delete-directory package-dir t)
           (error "Cancelled"))))
-    (funcall
-     source-fn name package-dir source-id source spec
-     (lambda ()
-       (when bin
-         (maphash
-          (lambda (key val-raw)
-            (setq val-raw (mason--expand (mason--expand val-raw spec) source-id))
-            (let* ((val (mason--parse-bin val-raw))
-                   (bin-type (gethash "type" val))
-                   (bin-path (gethash "path" val))
-                   (bin-fn (intern (concat "mason--bin-" bin-type))))
-              (when (or (null val) (not (fboundp bin-fn)))
-                (mason--err "Unsupported binary `%s'" val-raw))
-              (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
-                     (bin-link (mason--expand-child-file-name key bin-dir)))
-                (mason--msg "Resolving binary `%s'" val-raw)
-                (funcall bin-fn package-dir bin-link bin-path uninstall))))
-          bin))
-       (when share (mason--link-share-opt "share" share spec source-id package-dir uninstall))
-       (when opt (mason--link-share-opt "opt" opt spec source-id package-dir uninstall))
-       (unless mason-dry-run
-         (if uninstall (remhash name mason--installed)
-           (puthash name spec mason--installed))
-         (with-temp-file (mason--expand-child-file-name "index" packages-dir)
-           (prin1 mason--installed (current-buffer))))
-       (mason--msg "%s `%s'" (if uninstall "Uninstalled" "Installed") name)))))
+    (setq callback2
+          (lambda (success)
+            (if success (mason--msg "%s `%s'" (if uninstall "Uninstalled" "Installed") name)
+              (mason--msg "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
+            (when (functionp callback) (funcall callback success))))
+    (mason--wrap-error callback2 nil
+      (funcall
+       source-fn name package-dir source-id source spec
+       (lambda (success)
+         (mason--wrap-error callback2 t
+           (when bin
+             (maphash
+              (lambda (key val-raw)
+                (setq val-raw (mason--expand (mason--expand val-raw spec-id-ctx) source-id))
+                (let* ((val (mason--parse-bin val-raw))
+                       (bin-type (gethash "type" val))
+                       (bin-path (gethash "path" val))
+                       (bin-fn (intern (concat "mason--bin-" bin-type))))
+                  (when (or (null val) (not (fboundp bin-fn)))
+                    (error "Unsupported binary `%s'" val-raw))
+                  (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
+                         (bin-link (mason--expand-child-file-name key bin-dir)))
+                    (mason--msg "Resolving binary `%s'" val-raw)
+                    (funcall bin-fn package-dir bin-link bin-path uninstall))))
+              bin))
+           (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
+           (when opt (mason--link-share-opt "opt" opt spec-id-ctx source-id package-dir uninstall))
+           (unless mason-dry-run
+             (if uninstall (remhash name mason--installed)
+               (puthash name spec mason--installed))
+             (with-temp-file (mason--expand-child-file-name "index" packages-dir)
+               (prin1 mason--installed (current-buffer))))))))))
 
-(defun mason--link-share-opt (dest-dir table spec source-id package-dir uninstall)
+(defun mason--link-share-opt (dest-dir table spec-id-ctx source-id package-dir uninstall)
   "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
-Expand TABLE from SPEC and SOURCE-ID, if necessary."
+Expand TABLE from SPEC-ID-CTX and SOURCE-ID, if necessary."
   (mason--msg "Symlinking %s" dest-dir)
   (setq dest-dir (mason--expand-child-file-name dest-dir mason-dir))
   (maphash
    (lambda (link-dest link-source)
      (setq link-source (mason--expand-child-file-name
-                        (mason--expand (mason--expand link-source spec) source-id)
+                        (mason--expand (mason--expand link-source spec-id-ctx) source-id)
                         package-dir)
            link-dest (expand-file-name link-dest dest-dir))
      (cond
       ;; link/dest/: link/source/
       ((directory-name-p link-dest)
        (unless (directory-name-p link-source)
-         (mason--err "Link source `%s' is not a directory" link-source))
+         (error "Link source `%s' is not a directory" link-source))
        (unless mason-dry-run
          (unless (file-directory-p link-source)
-           (mason--err "Link source `%s' does not exist" link-source))
+           (error "Link source `%s' does not exist" link-source))
          (make-directory link-dest t)
          (dolist (entry (directory-files link-source nil directory-files-no-dot-files-regexp))
            (let ((entry-dest (mason--expand-child-file-name entry link-dest))
@@ -1518,10 +1547,10 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
       ;; link/dest: link/source
       (t
        (when (directory-name-p link-source)
-         (mason--err "Link source `%s' is a directory" link-source))
+         (error "Link source `%s' is a directory" link-source))
        (unless mason-dry-run
          (unless (file-exists-p link-source)
-           (mason--err "Link source `%s' does not exist" link-source))
+           (error "Link source `%s' does not exist" link-source))
          (make-directory (file-name-parent-directory link-dest) t)
          (if uninstall (mason--delete-file link-dest)
            (mason--link link-dest link-source t))))))
@@ -1533,41 +1562,57 @@ Expand TABLE from SPEC and SOURCE-ID, if necessary."
         (prev-mason-dir mason-dir))
     (setq mason-dry-run t
           mason-dir (make-temp-file "mason-dry-run-" 'dir))
-    (unwind-protect
-        (mason-install package)
-      (delete-directory mason-dir)
-      (setq mason-dry-run prev-dry-run
-            mason-dir prev-mason-dir)
-      (mason-ensure))))
+    (mason-install
+     package nil nil
+     (lambda (_)
+       (delete-directory mason-dir)
+       (setq mason-dry-run prev-dry-run
+             mason-dir prev-mason-dir)
+       (mason-ensure)))))
 
-(defun mason-dry-run-install-all ()
-  "Dry run install all packages."
-  (let ((prev-dry-run mason-dry-run)
-        (prev-mason-dir mason-dir)
-        (total-count (length (mason--get-package-list)))
-        (success-count 0))
+(defun mason-dry-run-install-all (&optional callback)
+  "Dry run install all packages.
+Call CALLBACK with success and total packages."
+  (let* ((prev-dry-run mason-dry-run)
+         (prev-mason-dir mason-dir)
+         (packages (mason--get-package-list))
+         (total-count (length packages))
+         (success-count 0)
+         (current-idx -1)
+         failed
+         installer)
     (setq mason-dry-run t
           mason-dir (make-temp-file "mason-dry-run-" 'dir))
-    (unwind-protect
-        (progn
-          (with-current-buffer (mason-buffer)
-            (read-only-mode -1)
-            (erase-buffer)
-            (read-only-mode 1))
-          (mason--msg "Started dry run test in `%s'" mason-dir)
-          (dolist (pkg (mason--get-package-list))
-            (condition-case err
-                (progn
-                  (mason-install pkg)
-                  (setq success-count (1+ success-count)))
-              (error
-               (unless (plist-get err :mason)
-                 (mason--msg "EXTERNAL ERROR: %s" (error-message-string err))))))
-          (mason--msg "Installed %d/%d packages" success-count total-count))
-      (delete-directory mason-dir)
-      (setq mason-dry-run prev-dry-run
-            mason-dir prev-mason-dir)
-      (mason-ensure))))
+    (with-current-buffer (mason-buffer)
+      (read-only-mode -1)
+      (erase-buffer)
+      (read-only-mode 1))
+    (mason--msg "Started dry run test in `%s'" mason-dir)
+    (setq
+     installer
+     (lambda (success)
+       (if success
+           (setq success-count (1+ success-count))
+         (when (> current-idx 0) (push (nth current-idx packages) failed)))
+       (setq current-idx (1+ current-idx))
+       (if (< current-idx total-count)
+           (mason-install (nth current-idx packages)
+                          nil nil
+                          (lambda (s)
+                            (run-at-time
+                             0 nil (lambda ()
+                                     (funcall installer s)))))
+         (mason--msg "Installed %d/%d packages, failed packages\n%s%S"
+                     success-count total-count
+                     (s-repeat 8 " ") (nreverse failed))
+         (delete-directory mason-dir)
+         (setq mason-dry-run prev-dry-run
+               mason-dir prev-mason-dir)
+         (mason-ensure)
+         (when (functionp callback)
+           (funcall callback success-count total-count)))))
+    (funcall installer nil)
+    t))
 
 (provide 'mason)
 ;;; mason.el ends here

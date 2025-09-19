@@ -45,11 +45,17 @@
 
 
 #+begin_src emacs-lisp :tangle yes
-  (mason-dry-run-install-all)
+  (let (msg)
+    (mason-dry-run-install-all
+     (lambda (a b)
+       (setq msg (format "Installed %d/%d packages" a b))))
+    (while (not msg)
+      (accept-process-output nil 0.01))
+    msg)
 #+end_src
 
 #+RESULTS:
-: Installed 533/540 packages
+: Installed 537/540 packages
 
 
 #+begin_src emacs-lisp :tangle yes
