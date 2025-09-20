@@ -1,5 +1,20 @@
 #+title: Test
 
+#+begin_src emacs-lisp :tangle yes
+  (mason--pipe-to-proc "fun1arg2 | fun1(fun1arg1) | fun2 fun2arg1 | fun3")
+#+end_src
+
+#+RESULTS:
+: fun3(fun2(fun2arg1, fun1(fun1arg1, fun1arg2)))
+
+
+#+begin_src emacs-lisp :tangle yes
+  (mason--proc-to-sexp "fun1(fun1arg1, fun2(fun2arg1, 'str1', \"str2\", fun3()))")
+#+end_src
+
+#+RESULTS:
+: (fun1 fun1arg1 (fun2 fun2arg1 "str1" "str2" (fun3)))
+
 
 #+begin_src emacs-lisp :tangle yes
   (mason--expand
@@ -55,7 +70,7 @@
 #+end_src
 
 #+RESULTS:
-: Installed 537/540 packages
+: Installed 540/540 packages
 
 
 #+begin_src emacs-lisp :tangle yes

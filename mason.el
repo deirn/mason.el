@@ -111,7 +111,7 @@ If SUCCESS, also call FN with argument t when BODY succeeded."
            ,@body
            ,(when success
               `(when fnp (funcall fn t))))
-       (error
+       ((error debug)
         (mason--msg "ERROR: %s" (error-message-string err))
         (when fnp (funcall fn nil))))))
 
@@ -351,7 +351,7 @@ Throws error when resulting path is not inside PARENT."
    (lambda (k _v)
      (unless (member k keys)
        (error "Unexpected key `%s' in table `%s'"
-                   k (json-encode table))))
+              k (json-encode table))))
    table))
 
 (defun mason--parse-purl (string)
@@ -378,7 +378,7 @@ https://github.com/package-url/purl-spec"
          purl)
     (let ((tn-split (s-split-up-to "/" path 1 t)))
       (unless (length= tn-split 2)
-        (error "Failed to parse PURL: `%s' does not contain type and name"))
+        (error "Failed to parse PURL: `%s' does not contain type and name" string))
       (setq type (nth 0 tn-split)
             name (nth 1 tn-split)))
     (let ((ns-split (s-split-up-to "/" name 1 t)))
@@ -448,45 +448,6 @@ https://github.com/package-url/purl-spec"
 (defun mason--unquote-string (s)
   "If S is double-quoted, return its unescaped contents; otherwise return S."
   (or (mason--unquote-string-or-nil s) s))
-
-(defun mason--expand (str ctx)
-  "Expand STR according to hash table CTX."
-  (let* ((dollar (replace-regexp-in-string "{{\\([^}]+\\)}}" "${\\1}" str))
-         expanded
-         (expanded-str
-          (s-format
-           dollar
-           (lambda (exp)
-             ;; TODO: more proper splitting
-             (let* ((pipes (mapcar #'string-trim (split-string exp "|" 'omit-nulls)))
-                    (var (nth 0 pipes))
-                    (ops (if (length< pipes 2) nil (seq-subseq pipes 1))))
-               (when (null pipes)
-                 (error "Empty expansion expression in `%s'" str))
-               (unless (string-match "^[A-Za-z0-9_.-]+$" var)
-                 (error "Unsupported expansion variable `%s' in `%s'" var str))
-               (let ((path (split-string var "\\."))
-                     (tree ctx))
-                 (dolist (p path)
-                   (setq tree (when tree (gethash p tree))))
-                 (unless tree
-                   (error "Unable to expand variable `%s' in `%s' with ctx `%s'" var str (json-serialize ctx)))
-                 (setq var tree))
-               (dolist (op ops)
-                 (cond
-                  ((string-prefix-p "strip_prefix " op)
-                   (let* ((prefix (mason--unquote-string-or-nil (string-trim (substring op (length "strip_prefix "))))))
-                     (unless prefix
-                       (error "Unable to expand `%s': strip_prefix can only accept one argument of type string" str))
-                     (unless (string-prefix-p prefix var)
-                       (error "Unable to expand `%s': strip_prefix: `%s' is not prefixed with `%s'" str var prefix))
-                     (setq var (substring var (length prefix)))))
-                  (t (error "Unable to expand `%s': unsupported operation `%s'" str op))))
-               (setq expanded t)
-               var)))))
-    (when expanded
-      (mason--msg "Expanded `%s' to `%s'" str expanded-str))
-    expanded-str))
 
 (defun mason--download (url newname &optional ok-if-already-exists)
   "Copy URL to NEWNAME.
@@ -603,6 +564,147 @@ Delete existing file if OVERWRITE is not nil."
       (mason--delete-file path))
     (make-symbolic-link target path))
   (mason--msg "Made symlink at `%s' that links to `%s'" path target))
+
+
+;; Expression Expanders
+
+(defconst mason--var    "[A-Za-z0-9_.-]+")
+(defconst mason--var-w  (concat "^" mason--var "$"))
+(defconst mason--str1   "'\\(.*\\)'")
+(defconst mason--str1-w (concat "^" mason--str1 "$"))
+(defconst mason--str2   "\"\\(.*\\)\"")
+(defconst mason--str2-w (concat "^" mason--str2 "$"))
+
+(defconst mason--pipe-fun (concat "^\\(" mason--var "\\)"
+                                  "\\(\s+\\(.*\\)\\)?$" ; optional arguments
+                                  ))
+(defconst mason--pipe-arg (concat "^\\(" mason--var
+                                  "\\|" mason--str1
+                                  "\\|" mason--str2
+                                  "\\)"
+                                  "\\(\s+\\|$\\)" ; spaces or end string
+                                  ))
+
+(defun mason--pipe-to-proc (exp)
+  "Convert pipe EXP to procedural-style expression."
+  (let* ((pipes (mapcar #'string-trim (split-string exp "|" 'omit-nills))))
+    (dotimes (i (- (length pipes) 1))
+      (let ((this (nth i pipes))
+            (next (nth (1+ i) pipes)))
+        (cond
+         ((string-suffix-p ")" next)
+          (setq next (string-trim (string-remove-suffix ")" next)))
+          (if (string-suffix-p "(" next)
+              (setq next (concat next this ")"))
+            (setq next (concat next ", " this ")"))))
+         ((string-match mason--pipe-fun next)
+          (let* ((fn (match-string 1 next))
+                 (args-str (match-string 3 next))
+                 (rest args-str)
+                 args)
+            (when (and args-str (not (string-empty-p args-str)))
+              (while (not (string-empty-p rest))
+                (unless (string-match mason--pipe-arg rest)
+                  (error "Failed to parse rest of function args `%s'" rest))
+                (push (match-string 1 rest) args)
+                (setq rest (string-remove-prefix (match-string 0 rest) rest)))
+              (setq args (nreverse args)))
+            (setq next (concat fn "("
+                               (when args (concat (mapconcat #'identity args ", ") ", "))
+                               this ")"))))
+         (t (error "Invalid expression `%s'" next)))
+        (setf (nth (1+ i) pipes) next)))
+    (car (last pipes))))
+
+(defconst mason--proc-fun   (concat "\\(" mason--var "\\)\s*(\\(.*\\))"))
+(defconst mason--proc-fun-w (concat "^" mason--proc-fun "$"))
+(defconst mason--proc-arg   (concat "^\\(" mason--var
+                                    "\\|" mason--proc-fun
+                                    "\\|" mason--str1
+                                    "\\|" mason--str2
+                                    "\\)\s*"
+                                    "\\(,\s*\\|$\\)" ; comma space or end string
+                                    ))
+
+(defun mason--proc-to-sexp (exp &optional transformer)
+  "Convert procedural EXP to s-expression.
+TRANSFORMER accept symbol type and string to transform to sexp."
+  (setq exp (string-trim exp))
+  (cond
+   ;; function call
+   ((string-match mason--proc-fun-w exp)
+    (let* ((fn (match-string 1 exp))
+           (args-str (string-trim (match-string 2 exp)))
+           (rest args-str)
+           args)
+      (while (not (string-empty-p rest))
+        (unless (string-match mason--proc-arg rest)
+          (error "Failed to parse rest of function args `%s'" rest))
+        (push (match-string 1 rest) args)
+        (setq rest (string-remove-prefix (match-string 0 rest) rest)))
+      (setq args (nreverse (mapcar (lambda (e) (mason--proc-to-sexp e transformer))
+                                   args)))
+      (when (functionp transformer)
+        (setq fn (funcall transformer 'function fn)))
+      (concat "(" (mapconcat #'identity (cons fn args) " ") ")")))
+   ;; ' string
+   ((string-match mason--str1-w exp)
+    (mason--quote (match-string 1 exp) 'always))
+   ;; " string, already double-quoted
+   ((string-match-p mason--str2-w exp)
+    exp)
+   ;; variable access
+   ((string-match-p mason--var-w exp)
+    (if (functionp transformer)
+        (funcall transformer 'variable exp)
+      exp))
+   (t (error "Invalid expression `%s'" exp))))
+
+(defun mason--pipe-to-sexp (exp &optional transformer)
+  "Convert pipe EXP to s-expression.
+See `mason--proc-to-sexp' for TRANSFORMER."
+  (mason--proc-to-sexp (mason--pipe-to-proc exp) transformer))
+
+(defconst mason--expand-str nil)
+(defconst mason--expand-ctx nil)
+
+(defun mason--expand (str ctx)
+  "Expand STR according to hash table CTX."
+  (let* ((mason--expand-str str)
+         (mason--expand-ctx ctx)
+         (dollar (replace-regexp-in-string "{{\\([^}]+\\)}}" "${\\1}" str))
+         (expanded-str (s-format dollar
+                                 (lambda (exp)
+                                   (eval (read (mason--pipe-to-sexp exp #'mason--expand-transformer)) t)))))
+    (unless (string= str expanded-str)
+      (mason--msg "Expanded `%s' to `%s'" str expanded-str))
+    expanded-str))
+
+(defun mason--expand-transformer (type string)
+  "TYPE STRING exp transformer for `mason--expand'."
+  (if (eq type 'variable)
+      (concat "(mason--expand-variable " (mason--quote string 'always) ")")
+    (concat "mason--expand-function " (mason--quote string 'always))))
+
+(defun mason--expand-function (function &rest args)
+  "Expand FUNCTION with ARGS."
+  (let ((a0 (nth 0 args))
+        (a1 (nth 1 args)))
+    (cl-case (intern function)
+      (take_if_not (if (not a0) a1 ""))
+      (strip_prefix (string-remove-prefix a0 a1))
+      (is_platform (mason--target-match a0))
+      (t (error "Unable to expand `%s' unsupported operation `%s'" mason--expand-str function)))))
+
+(defun mason--expand-variable (var)
+  "Get expand VAR."
+  (let ((path (split-string var "\\."))
+        (tree mason--expand-ctx))
+    (dolist (p path)
+      (setq tree (when tree (gethash p tree))))
+    (unless tree
+      (mason--msg "Missing variable `%s'" var))
+    (or tree "")))
 
 
 ;; Archive Extractors
@@ -1493,29 +1595,32 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL CALLBACK."
       (funcall
        source-fn name package-dir source-id source spec
        (lambda (success)
-         (mason--wrap-error callback2 t
-           (when bin
-             (maphash
-              (lambda (key val-raw)
-                (setq val-raw (mason--expand (mason--expand val-raw spec-id-ctx) source-id))
-                (let* ((val (mason--parse-bin val-raw))
-                       (bin-type (gethash "type" val))
-                       (bin-path (gethash "path" val))
-                       (bin-fn (intern (concat "mason--bin-" bin-type))))
-                  (when (or (null val) (not (fboundp bin-fn)))
-                    (error "Unsupported binary `%s'" val-raw))
-                  (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
-                         (bin-link (mason--expand-child-file-name key bin-dir)))
-                    (mason--msg "Resolving binary `%s'" val-raw)
-                    (funcall bin-fn package-dir bin-link bin-path uninstall))))
-              bin))
-           (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
-           (when opt (mason--link-share-opt "opt" opt spec-id-ctx source-id package-dir uninstall))
-           (unless mason-dry-run
-             (if uninstall (remhash name mason--installed)
-               (puthash name spec mason--installed))
-             (with-temp-file (mason--expand-child-file-name "index" packages-dir)
-               (prin1 mason--installed (current-buffer))))))))))
+         (if (not success)
+             (funcall callback2 nil)
+           (mason--wrap-error callback2 t
+             (when bin
+               (maphash
+                (lambda (key val-raw)
+                  (setq val-raw (mason--expand (mason--expand val-raw spec-id-ctx) source-id))
+                  (unless (string-empty-p val-raw)
+                    (let* ((val (mason--parse-bin val-raw))
+                           (bin-type (gethash "type" val))
+                           (bin-path (gethash "path" val))
+                           (bin-fn (intern (concat "mason--bin-" bin-type))))
+                      (when (or (null val) (not (fboundp bin-fn)))
+                        (error "Unsupported binary `%s'" val-raw))
+                      (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
+                             (bin-link (mason--expand-child-file-name key bin-dir)))
+                        (mason--msg "Resolving binary `%s'" val-raw)
+                        (funcall bin-fn package-dir bin-link bin-path uninstall)))))
+                bin))
+             (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
+             (when opt (mason--link-share-opt "opt" opt spec-id-ctx source-id package-dir uninstall))
+             (unless mason-dry-run
+               (if uninstall (remhash name mason--installed)
+                 (puthash name spec mason--installed))
+               (with-temp-file (mason--expand-child-file-name "index" packages-dir)
+                 (prin1 mason--installed (current-buffer)))))))))))
 
 (defun mason--link-share-opt (dest-dir table spec-id-ctx source-id package-dir uninstall)
   "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
@@ -1524,36 +1629,36 @@ Expand TABLE from SPEC-ID-CTX and SOURCE-ID, if necessary."
   (setq dest-dir (mason--expand-child-file-name dest-dir mason-dir))
   (maphash
    (lambda (link-dest link-source)
-     (setq link-source (mason--expand-child-file-name
-                        (mason--expand (mason--expand link-source spec-id-ctx) source-id)
-                        package-dir)
-           link-dest (expand-file-name link-dest dest-dir))
-     (cond
-      ;; link/dest/: link/source/
-      ((directory-name-p link-dest)
-       (unless (directory-name-p link-source)
-         (error "Link source `%s' is not a directory" link-source))
-       (unless mason-dry-run
-         (unless (file-directory-p link-source)
-           (error "Link source `%s' does not exist" link-source))
-         (make-directory link-dest t)
-         (dolist (entry (directory-files link-source nil directory-files-no-dot-files-regexp))
-           (let ((entry-dest (mason--expand-child-file-name entry link-dest))
-                 (entry-source (mason--expand-child-file-name entry link-source)))
-             (if uninstall (mason--delete-file entry-dest)
-               (mason--link entry-dest entry-source t))))
-         (when (and uninstall (directory-empty-p link-dest))
-           (mason--delete-directory link-dest))))
-      ;; link/dest: link/source
-      (t
-       (when (directory-name-p link-source)
-         (error "Link source `%s' is a directory" link-source))
-       (unless mason-dry-run
-         (unless (file-exists-p link-source)
-           (error "Link source `%s' does not exist" link-source))
-         (make-directory (file-name-parent-directory link-dest) t)
-         (if uninstall (mason--delete-file link-dest)
-           (mason--link link-dest link-source t))))))
+     (setq link-source (mason--expand (mason--expand link-source spec-id-ctx) source-id))
+     (unless (string-empty-p link-source)
+       (setq link-source (mason--expand-child-file-name link-source package-dir)
+             link-dest (expand-file-name link-dest dest-dir))
+       (cond
+        ;; link/dest/: link/source/
+        ((directory-name-p link-dest)
+         (unless (directory-name-p link-source)
+           (error "Link source `%s' is not a directory" link-source))
+         (unless mason-dry-run
+           (unless (file-directory-p link-source)
+             (error "Link source `%s' does not exist" link-source))
+           (make-directory link-dest t)
+           (dolist (entry (directory-files link-source nil directory-files-no-dot-files-regexp))
+             (let ((entry-dest (mason--expand-child-file-name entry link-dest))
+                   (entry-source (mason--expand-child-file-name entry link-source)))
+               (if uninstall (mason--delete-file entry-dest)
+                 (mason--link entry-dest entry-source t))))
+           (when (and uninstall (directory-empty-p link-dest))
+             (mason--delete-directory link-dest))))
+        ;; link/dest: link/source
+        (t
+         (when (directory-name-p link-source)
+           (error "Link source `%s' is a directory" link-source))
+         (unless mason-dry-run
+           (unless (file-exists-p link-source)
+             (error "Link source `%s' does not exist" link-source))
+           (make-directory (file-name-parent-directory link-dest) t)
+           (if uninstall (mason--delete-file link-dest)
+             (mason--link link-dest link-source t)))))))
    table))
 
 (defun mason-dry-run-install (package)
