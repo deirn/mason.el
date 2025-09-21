@@ -63,10 +63,6 @@ Defaults to 1 week."
   "Wheter to show deprecated packages."
   :type 'boolean :group 'mason)
 
-(defface mason-deprecated
-  '((t :inherit shadow :strike-through t))
-  "Face used for deprecated packages.")
-
 
 ;; Utility Functions
 
@@ -932,8 +928,8 @@ Expand BUILD[env] with ID."
 (defun mason--source-uninstall (_name prefix _id _source _spec next)
   "A uninstall source \"resolver\", deletes the PREFIX and call NEXT."
   (mason--async
-    (mason--delete-directory prefix t)
-    (mason--run-at-main (funcall next))))
+    (mason--wrap-error-at-main next t
+      (mason--delete-directory prefix t))))
 
 (mason--source! cargo (:qualifiers ("repository_url" "rev" "locked" "features"))
   (let (repo-url rev (locked t) features)
@@ -1359,6 +1355,7 @@ WIN-EXT is the extension to adds when on windows."
 (defvar mason--ask-package-callback nil)
 (defvar mason--ask-package-category nil)
 (defvar mason--ask-package-language nil)
+(defvar mason--ask-package-filter nil)
 (defvar mason--ask-package-filter-function nil)
 (defvar mason--ask-package-input nil)
 
@@ -1410,23 +1407,23 @@ WIN-EXT is the extension to adds when on windows."
                 (pkg (gethash name mason--registry))
                 (desc (gethash "description" pkg))
                 (desc (replace-regexp-in-string "\n" " " desc))
-                (deprecated (gethash "deprecation" pkg))
-                (installed (gethash name mason--installed)))
-           (list (if deprecated (propertize name 'face 'mason-deprecated) name)
+                (deprecated (gethash "deprecation" pkg)))
+           (list name
                  nil
                  (concat
                   spaces
-                  (when installed (propertize "[Installed] " 'face 'success))
-                  (when deprecated (propertize "[Deprecated] " 'face 'mason-deprecated))
-                  (propertize desc 'face (if deprecated 'mason-deprecated 'font-lock-doc-face))))))
+                  (when deprecated (propertize "[Deprecated] " 'face 'error))
+                  (propertize desc 'face 'font-lock-doc-face)))))
        pkgs))))
 
-(defun mason--ask-package (prompt callback)
-  "Ask for package with PROMPT, call CALLBACK with the selected package name."
+(defun mason--ask-package (prompt filter callback)
+  "Ask for package with PROMPT and FILTER.
+Call CALLBACK with the selected package spec."
   (unless (and prompt callback)
     (user-error "Called without prompt and callback"))
   (setq mason--ask-package-prompt prompt
-        mason--ask-package-callback callback)
+        mason--ask-package-callback callback
+        mason--ask-package-filter filter)
   (unwind-protect (mason--ask-package-0)
     (setq mason--ask-package-prompt nil
           mason--ask-package-callback nil
@@ -1459,7 +1456,8 @@ WIN-EXT is the extension to adds when on windows."
                        (cats (gethash "categories" pkg []))
                        (langs (gethash "languages" pkg []))
                        (deprecation (gethash "deprecation" pkg)))
-                  (and (or mason-show-deprecated
+                  (and (funcall mason--ask-package-filter p)
+                       (or mason-show-deprecated
                            (null deprecation))
                        (or (null cat)
                            (seq-contains-p cats cat))
@@ -1471,7 +1469,7 @@ WIN-EXT is the extension to adds when on windows."
         (progn
           (setq mason--ask-package-input pkg)
           (funcall mason--ask-package-filter-function nil))
-      (funcall mason--ask-package-callback pkg))))
+      (funcall mason--ask-package-callback (gethash pkg mason--registry)))))
 
 (defmacro mason--with-installed (&rest body)
   "Run BODY with `mason--installed' as the registry."
@@ -1479,6 +1477,7 @@ WIN-EXT is the extension to adds when on windows."
   `(if (= (hash-table-count mason--installed) 0)
        (mason--msg "No package has been installed")
      (let ((mason--registry mason--installed)
+           (mason-show-deprecated t)
            mason--package-list mason--category-list mason--language-list)
        ,@body)))
 
@@ -1488,8 +1487,8 @@ WIN-EXT is the extension to adds when on windows."
 If INTERACTIVE, ask for PACKAGE."
   (interactive '(nil nil))
   (if (and package (not interactive))
-      (mason--spec-0 package)
-    (mason--ask-package "Mason Spec" #'mason--spec-0)))
+      (mason--spec-0 (gethash package mason--registry))
+    (mason--ask-package "Mason Spec" #'identity #'mason--spec-0)))
 
 ;;;###autoload
 (defun mason-installed-spec (package &optional interactive)
@@ -1498,10 +1497,10 @@ If INTERACTIVE, ask for PACKAGE."
   (interactive '(nil nil))
   (mason--with-installed (mason-spec package interactive)))
 
-(defun mason--spec-0 (package)
-  "Implementation of `mason-spec' PACKAGE."
-  (if-let* ((spec (gethash package mason--registry))
-            (buf (get-buffer-create (format "*mason spec of %s*" package))))
+(defun mason--spec-0 (spec)
+  "Implementation of `mason-spec' SPEC."
+  (if-let* ((name (gethash "name" spec))
+            (buf (get-buffer-create (format "*mason spec of %s*" name))))
       (with-current-buffer buf
         (read-only-mode -1)
         (erase-buffer)
@@ -1511,7 +1510,7 @@ If INTERACTIVE, ask for PACKAGE."
         (js-json-mode)
         (read-only-mode 1)
         (pop-to-buffer buf))
-    (error "Invalid package `%s'" package)))
+    (error "Invalid package `%s'" name)))
 
 ;;;###autoload
 (defun mason-install (package &optional force interactive callback)
@@ -1521,10 +1520,12 @@ If INTERACTIVE, ask for PACKAGE and FORCE.
 
 CALLBACK is a function that will be called with one argument,
 indicating the package success to install."
-  (interactive '(nil nil t))
+  (interactive '(nil nil t nil))
   (if (and package (not interactive))
-      (mason--install-0 package force nil nil callback)
+      (mason--install-0 (gethash package mason--registry) force nil nil callback)
     (mason--ask-package "Mason Install"
+                        (lambda (p) (and (not (hash-table-contains-p p mason--installed))
+                                         (not (hash-table-contains-p p mason--pending))))
                         (lambda (p) (mason--install-0 p nil t nil callback)))))
 
 ;;;###autoload
@@ -1534,18 +1535,54 @@ If INTERACTIVE, ask for PACKAGE.
 
 CALLBACK is a function that will be called with one argument,
 indicating the package success to uninstall."
-  (interactive '(nil t))
-  (mason--with-installed
-    (if (and package (not interactive))
-        (mason--install-0 package nil nil t callback)
+  (interactive '(nil t nil))
+  (if (and package (not interactive))
+      (mason--install-0 (gethash package mason--installed) nil nil t callback)
+    (mason--with-installed
       (mason--ask-package "Mason Uninstall"
+                          #'identity
                           (lambda (p) (mason--install-0 p nil t t callback))))))
 
-(defun mason--install-0 (package force interactive uninstall callback)
+;;;###autoload
+(defun mason-update (package &optional interactive callback)
+  "Update a Mason PACKAGE.
+If INTERACTIVE, ask for PACKAGE.
+
+CALLBACK is a function that will be called with one argument,
+indicating the package success to updated."
+  (interactive '(nil t nil))
+  (let* ((registry mason--registry)
+         (filtered (mason--make-hash))
+         (install (lambda (pkg)
+                    (lambda (success)
+                      (if success (mason-install pkg callback)
+                        (funcall callback nil))))))
+    (maphash (lambda (k i-spec)
+               (let* ((i-source (gethash "source" i-spec))
+                      (i-id (gethash "id" i-source))
+                      (u-spec (gethash k registry))
+                      (u-source (gethash "source" u-spec))
+                      (u-id (gethash "id" u-source)))
+                 (unless (string= i-id u-id)
+                   (puthash k i-spec filtered))))
+             mason--installed)
+    (cond
+     ((= 0 (hash-table-count filtered))
+      (mason--msg "No update available"))
+     ((and package (not interactive))
+      (mason-uninstall package nil (funcall install package)))
+     (t (mason--with-installed
+          (setq mason--registry filtered)
+          (mason--ask-package "Mason Update"
+                              #'identity
+                              (lambda (p)
+                                (setq p (gethash "name" p))
+                                (mason-uninstall p nil (funcall install p)))))))))
+
+(defun mason--install-0 (spec force interactive uninstall callback)
   "Implementation of `mason-install' and `mason-uninstall'.
-Args: PACKAGE FORCE INTERACTIVE UNINSTALL CALLBACK."
-  (let* ((spec (gethash package mason--registry))
-         (spec (read (prin1-to-string spec))) ; deep copy
+Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
+  (let* ((spec (read (prin1-to-string spec))) ; deep copy
          (name (gethash "name" spec))
          (deprecation (gethash "deprecation" spec))
          (packages-dir (mason--expand-child-file-name "packages" mason-dir))
@@ -1562,32 +1599,37 @@ Args: PACKAGE FORCE INTERACTIVE UNINSTALL CALLBACK."
          (share (gethash "share" spec))
          (opt (gethash "opt" spec))
          callback2)
-    (mason--expect-hash-key spec
-                            "name" "description" "homepage" "deprecation"
-                            "licenses" "languages" "categories"
-                            "source" "bin" "share" "opt" "schemas"
-                            "registry" "neovim" "ci_skip")
-    (when (and deprecation interactive (not uninstall))
-      (unless (y-or-n-p (format-message
-                         "Package `%s' is deprecated since `%s' with the message:\n\t%s\nInstall anyway? "
-                         name (gethash "since" deprecation) (gethash "message" deprecation)))
-        (error "Cancelled")))
-    (if uninstall (mason--msg "Uninstalling package `%s'" name)
-      (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
-    (when (not (fboundp source-fn))
-      (error "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
-    (when (and (not uninstall)
-               (not mason-dry-run)
-               (file-directory-p package-dir)
-               (not (directory-empty-p package-dir)))
-      (if (not interactive)
-          (if force (mason--delete-directory package-dir t)
-            (error "Directory %s already exists" package-dir))
-        (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
-            (mason--delete-directory package-dir t)
-          (error "Cancelled"))))
+    (mason--wrap-error (lambda (_) (error "")) nil
+      (when (gethash name mason--pending)
+        (error "Package `%s' is still pending" name))
+      (mason--expect-hash-key spec
+                              "name" "description" "homepage" "deprecation"
+                              "licenses" "languages" "categories"
+                              "source" "bin" "share" "opt" "schemas"
+                              "registry" "neovim" "ci_skip")
+      (when (and deprecation interactive (not uninstall))
+        (unless (y-or-n-p (format-message
+                           "Package `%s' is deprecated since `%s' with the message:\n\t%s\nInstall anyway? "
+                           name (gethash "since" deprecation) (gethash "message" deprecation)))
+          (error "Cancelled")))
+      (if uninstall (mason--msg "Uninstalling package `%s'" name)
+        (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
+      (when (not (fboundp source-fn))
+        (error "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
+      (when (and (not uninstall)
+                 (not mason-dry-run)
+                 (file-directory-p package-dir)
+                 (not (directory-empty-p package-dir)))
+        (if (not interactive)
+            (if force (mason--delete-directory package-dir t)
+              (error "Directory %s already exists" package-dir))
+          (if (y-or-n-p (format-message "Directory %s exists, delete? " package-dir))
+              (mason--delete-directory package-dir t)
+            (error "Cancelled")))))
+    (puthash name t mason--pending)
     (setq callback2
           (lambda (success)
+            (remhash name mason--pending)
             (if success (mason--msg "%s `%s'" (if uninstall "Uninstalled" "Installed") name)
               (mason--msg "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
             (when (functionp callback) (funcall callback success))))
