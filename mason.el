@@ -735,11 +735,9 @@ Expand BUILD[env] with ID."
               (mason--delete-file script t)
               (funcall next success)))))
 
-(defun mason--source-uninstall (_name prefix _id _source _spec next)
-  "A uninstall source \"resolver\", deletes the PREFIX and call NEXT."
-  (mason--async
-    (mason--wrap-error-at-main next t
-      (mason--delete-directory prefix t))))
+(defun mason--source-noop (_name _prefix _id _source _spec next)
+  "No-op source resolver, simply calls NEXT."
+  (funcall next t))
 
 (mason--source! cargo (:qualifiers ("repository_url" "rev" "locked" "features"))
   (let (repo-url rev (locked t) features)
@@ -971,7 +969,7 @@ WIN-EXT is the extension to adds when on windows."
              (setq path (concat path ,win-ext)
                    target (concat target ,win-ext)))))
      (if uninstall (mason--delete-file path)
-       (mason--link path (mason--expand-child-file-name (concat ,dir "/" target) prefix)))))
+       (mason--link path (mason--expand-child-file-name (concat ,dir "/" target) prefix) t))))
 
 (cl-defmacro mason--bin-wrapper! (content &optional &key env)
   "Call `mason--make-shell' with CONTENT and ENV."
@@ -1399,7 +1397,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
          (source (gethash "source" spec))
          (source-id-raw (gethash "id" source))
          (source-id (mason--parse-purl source-id-raw))
-         (source-type (if uninstall "uninstall" (gethash "type" source-id)))
+         (source-type (if uninstall "noop" (gethash "type" source-id)))
          (source-fn (intern (concat "mason--source-" source-type)))
          ;; links
          (spec-id-ctx (mason--merge-hash spec source-id))
@@ -1440,6 +1438,12 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
             (remhash name mason--pending)
             (if success (mason--success "%s `%s'" (if uninstall "Uninstalled" "Installed") name)
               (mason--error "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
+            (when success
+              (unless mason-dry-run
+                (if uninstall (remhash name mason--installed)
+                  (puthash name spec mason--installed))
+                (with-temp-file (mason--expand-child-file-name "index" packages-dir)
+                  (prin1 mason--installed (current-buffer)))))
             (when (functionp callback) (funcall callback success))))
     (mason--wrap-error callback2 nil
       (funcall
@@ -1447,7 +1451,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
        (lambda (success)
          (if (not success)
              (funcall callback2 nil)
-           (mason--wrap-error callback2 t
+           (mason--wrap-error callback2 (not uninstall)
              (when bin
                (maphash
                 (lambda (key val-raw)
@@ -1466,11 +1470,10 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
                 bin))
              (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
              (when opt (mason--link-share-opt "opt" opt spec-id-ctx source-id package-dir uninstall))
-             (unless mason-dry-run
-               (if uninstall (remhash name mason--installed)
-                 (puthash name spec mason--installed))
-               (with-temp-file (mason--expand-child-file-name "index" packages-dir)
-                 (prin1 mason--installed (current-buffer)))))))))))
+             (when uninstall
+               (mason--process
+                 (mason--emacs-cmd `(mason--delete-directory ,package-dir t))
+                 :then callback2)))))))))
 
 (defun mason--link-share-opt (dest-dir table spec-id-ctx source-id package-dir uninstall)
   "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
