@@ -57,12 +57,6 @@ Defaults to 1 week."
   "Wheter to show deprecated packages."
   :type 'boolean :group 'mason)
 
-(defface mason-log-time    '((t . (:inherit shadow)))  "Log timestamp."   :group 'mason)
-(defface mason-log-info    '((t))                      "Log level info."  :group 'mason)
-(defface mason-log-warn    '((t . (:inherit warning))) "Log level warn."  :group 'mason)
-(defface mason-log-error   '((t . (:inherit error)))   "Log level error." :group 'mason)
-(defface mason-log-success '((t . (:inherit success))) "Log level error." :group 'mason)
-
 
 ;; Utility Functions
 
@@ -101,7 +95,8 @@ FN SUCCESS BODY."
 
 (defun mason--process-filter (proc string)
   "PROC STRING filter that logs the output."
-  (let* ((acc (or (process-get proc :accumulator) ""))
+  (let* ((mason--log-pkg (process-get proc :pkg))
+         (acc (or (process-get proc :accumulator) ""))
          (acc (concat acc string))
          line)
     (while (string-match "^\\(.*\\)\n+" acc)
@@ -151,11 +146,13 @@ THEN needs to accept a parameter, indicating if the process succeeded."
                       (let* ((cmd (car (process-command proc)))
                              (id (process-id proc))
                              (status (process-exit-status proc))
-                             (success (zerop status)))
+                             (success (zerop status))
+                             (mason--log-pkg (process-get proc :pkg)))
                         (if success (mason--info "%s(%s): Finished with status %s" cmd id status)
                           (mason--error "%s(%s): Failed with status %s" cmd id status))
                         (when (functionp then)
                           (funcall then success))))))))
+      (process-put proc :pkg mason--log-pkg)
       (mason--info "%s(%s): %s" (car cmd) (process-id proc) msg))))
 
 (cl-defmacro mason--process2 (cmd &optional &key env cwd then)
@@ -253,14 +250,6 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
     (when s-arch (setq match (and match (equal arch s-arch))))
     (when s-libc (setq match (and match (equal libc s-libc))))
     match))
-
-(defmacro mason--make-hash (&rest kvs)
-  "Make a hash table with `equal' test populated with KVS pairs."
-  (declare (indent defun))
-  `(let ((h (make-hash-table :test 'equal)))
-     ,@(cl-loop for (k v) on kvs by #'cddr
-                collect `(puthash ,k ,v h))
-     h))
 
 (defun mason--merge-hash (&rest tables)
   "Merge hash TABLES to one."
@@ -1290,37 +1279,6 @@ Call CALLBACK with the selected package spec."
        ,@body)))
 
 ;;;###autoload
-(defun mason-spec (package &optional interactive)
-  "Visit Mason spec file for PACKAGE.
-If INTERACTIVE, ask for PACKAGE."
-  (interactive '(nil nil))
-  (if (and package (not interactive))
-      (mason--spec-0 (gethash package mason--registry))
-    (mason--ask-package "Mason Spec" #'identity #'mason--spec-0)))
-
-;;;###autoload
-(defun mason-installed-spec (package &optional interactive)
-  "Visit Mason spec file for installed PACKAGE.
-If INTERACTIVE, ask for PACKAGE."
-  (interactive '(nil nil))
-  (mason--with-installed (mason-spec package interactive)))
-
-(defun mason--spec-0 (spec)
-  "Implementation of `mason-spec' SPEC."
-  (if-let* ((name (gethash "name" spec))
-            (buf (get-buffer-create (format "*mason spec of %s*" name))))
-      (with-current-buffer buf
-        (read-only-mode -1)
-        (erase-buffer)
-        (goto-char (point-min))
-        (insert (json-serialize spec))
-        (json-pretty-print-buffer)
-        (js-json-mode)
-        (read-only-mode 1)
-        (pop-to-buffer buf))
-    (error "Invalid package `%s'" name)))
-
-;;;###autoload
 (defun mason-install (package &optional force interactive callback)
   "Install a Mason PACKAGE.
 If FORCE non nil delete existing installation, if exists.
@@ -1406,6 +1364,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
          (bin (gethash "bin" spec))
          (share (gethash "share" spec))
          (opt (gethash "opt" spec))
+         (mason--log-pkg name)
          callback2)
     (mason--wrap-error (lambda (_) (error "")) nil
       (when (gethash name mason--pending)

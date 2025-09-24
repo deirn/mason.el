@@ -40,18 +40,45 @@
   "If not nil, only print messages what mason would do."
   :type 'boolean :group 'mason)
 
+
+
+;; Macros
+
+(defmacro mason--make-hash (&rest kvs)
+  "Make a hash table with `equal' test populated with KVS pairs."
+  (declare (indent defun))
+  `(let ((h (make-hash-table :test 'equal)))
+     ,@(cl-loop for (k v) on kvs by #'cddr
+                collect `(puthash ,k ,v h))
+     h))
+
 
 ;; Logging
 
+(defface mason-log-time    '((t . (:inherit shadow)))  "Log timestamp."   :group 'mason)
+(defface mason-log-info    '((t))                      "Log level info."  :group 'mason)
+(defface mason-log-warn    '((t . (:inherit warning))) "Log level warn."  :group 'mason)
+(defface mason-log-error   '((t . (:inherit error)))   "Log level error." :group 'mason)
+(defface mason-log-success '((t . (:inherit success))) "Log level error." :group 'mason)
+
+(defconst mason-buffer " *mason*")
 (define-derived-mode mason-log-mode special-mode "Mason Log"
   :interactive nil)
 
-(defconst mason-buffer " *mason*")
+(defvar mason--log (mason--make-hash))
+(defconst mason--log-pkg nil)
+
+(defun mason--log-clean ()
+  "Cleanup after log buffer killed."
+  (setq mason--log (mason--make-hash)
+        mason--log-pkg nil))
+
 (defun mason-buffer ()
   "Get mason buffer."
   (or (get-buffer mason-buffer)
       (with-current-buffer (get-buffer-create mason-buffer)
         (mason-log-mode)
+        (add-hook 'kill-buffer-hook #'mason--log-clean nil 'local)
         (read-only-mode 1)
         (current-buffer))))
 
@@ -68,14 +95,20 @@
 
 (defun mason--log (face prefix format args)
   "Log with FACE, PREFIX, FORMAT, and ARGS."
-  (let ((formatted (apply #'format-message format args)))
+  (let* ((formatted (apply #'format-message format args))
+         (ins (concat
+               (propertize (format-time-string "[%F %T] ") 'face 'mason-log-time)
+               (when mason-dry-run (propertize "[DRY] " 'face 'mason-log-time))
+               (propertize (concat prefix formatted) 'face face))))
     (message "%s" formatted)
+    (when (and mason--log-pkg (not mason-dry-run))
+      (puthash mason--log-pkg
+               (cons ins (gethash mason--log-pkg mason--log))
+               mason--log))
     (with-current-buffer (mason-buffer)
       (read-only-mode -1)
       (goto-char (point-max))
-      (insert (propertize (format-time-string "[%F %T] ") 'face 'mason-log-time))
-      (when mason-dry-run (insert (propertize "[DRY] " 'face 'mason-log-time)))
-      (insert (propertize (concat prefix formatted) 'face face) "\n")
+      (insert ins "\n")
       (read-only-mode 1))
     formatted))
 
