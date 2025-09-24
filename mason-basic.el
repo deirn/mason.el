@@ -97,20 +97,6 @@
       (format "\"%s\"" (replace-regexp-in-string "\"" "\\\\\"" str))
     str))
 
-(defmacro mason--process-output! ()
-  "Copy output of process from BUFFER to buffer command `mason-buffer'."
-  `(progn
-     (if success (mason--info "`%s' finished with status %s" msg status)
-       (mason--error "`%s' failed with status %s" msg status))
-     (with-current-buffer (mason-buffer)
-       (let ((start (point-max)))
-         (read-only-mode -1)
-         (goto-char start)
-         (insert-buffer-substring buffer)
-         (indent-rigidly start (point) 8)
-         (read-only-mode 1)))
-     (kill-buffer buffer)))
-
 (cl-defun mason--process-sync (cmd &optional &key in out)
   "Run CMD with ARGS synchronously.
 See `call-process' INFILE and DESTINATION for IN and OUT."
@@ -125,7 +111,16 @@ See `call-process' INFILE and DESTINATION for IN and OUT."
     (with-current-buffer buffer
       (setq status (apply #'call-process prog in (or out t) nil (cdr cmd)))
       (setq success (zerop status))
-      (mason--process-output!)
+      (if success (mason--info "`%s' finished with status %s" msg status)
+        (mason--error "`%s' failed with status %s" msg status))
+      (with-current-buffer (mason-buffer)
+        (let ((start (point-max)))
+          (read-only-mode -1)
+          (goto-char start)
+          (insert-buffer-substring buffer)
+          (indent-rigidly start (point) 8)
+          (read-only-mode 1)))
+      (kill-buffer buffer)
       (unless success (error "Failed `%s'" msg))
       (cons status success))))
 

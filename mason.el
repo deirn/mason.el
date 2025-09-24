@@ -100,19 +100,16 @@ FN SUCCESS BODY."
        ,success ,@body)))
 
 (defun mason--process-filter (proc string)
-  "PROC STRING filter."
-  (when (buffer-live-p (process-buffer proc))
-    (setq string (replace-regexp-in-string (rx ?\r (** 0 1 ?\n)) "\n"
-                                           (ansi-color-filter-apply string)))
-    (with-current-buffer (process-buffer proc)
-      (let ((moving (= (point) (process-mark proc))))
-        (save-excursion
-          (read-only-mode -1)
-          (goto-char (process-mark proc))
-          (insert string)
-          (set-marker (process-mark proc) (point))
-          (read-only-mode 1))
-        (if moving (goto-char (process-mark proc)))))))
+  "PROC STRING filter that logs the output."
+  (let* ((acc (or (process-get proc :accumulator) ""))
+         (acc (concat acc string))
+         line)
+    (while (string-match "^\\(.*\\)\n+" acc)
+      (setq line (match-string 1 acc)
+            acc (string-remove-prefix (match-string 0 acc) acc))
+      (unless (string-empty-p line)
+        (mason--info "%s(%d): %s" (car (process-command proc)) (process-id proc) line)))
+    (process-put proc :accumulator acc)))
 
 (cl-defun mason--process (cmd &optional &key env cwd then)
   "Run process CMD asynchronously.
@@ -131,30 +128,35 @@ THEN needs to accept a parameter, indicating if the process succeeded."
         (let ((k (car e)) (v (cdr e)))
           (push (concat k "=" v) process-environment)
           (setq msg (concat k "=" (mason--quote v) " " msg)))))
-    (if cwd (mason--info "Calling `%s' at `%s'" msg cwd)
-      (mason--info "Calling `%s'" msg))
+    (setq msg (if cwd (format-message "Calling `%s' at `%s'" msg cwd)
+                (format-message "Calling `%s'" msg)))
     (when mason-dry-run
+      (mason--info "%s" msg)
       (when (functionp then) (funcall then t))
       (cl-return-from mason--process nil))
     (unless (executable-find prog)
       (error "Missing program `%s'" prog))
     (setq buffer (generate-new-buffer "*mason process*"))
     (with-current-buffer buffer (read-only-mode 1))
-    (let ((default-directory (or (when cwd (expand-file-name cwd))
-                                 default-directory)))
-      (make-process
-       :name "mason"
-       :buffer buffer
-       :filter #'mason--process-filter
-       :command cmd
-       :sentinel
-       (lambda (proc _)
-         (when (memq (process-status proc) '(exit signal))
-           (let* ((status (process-exit-status proc))
-                  (success (zerop status)))
-             (mason--process-output!)
-             (when (functionp then) (funcall then success))
-             (unless success (error "Failed `%s'" msg)))))))))
+    (let* ((default-directory (or (when cwd (expand-file-name cwd))
+                                  default-directory))
+           (proc (make-process
+                  :name "mason"
+                  :buffer buffer
+                  :filter #'mason--process-filter
+                  :command cmd
+                  :sentinel
+                  (lambda (proc _)
+                    (when (memq (process-status proc) '(exit signal))
+                      (let* ((cmd (car (process-command proc)))
+                             (id (process-id proc))
+                             (status (process-exit-status proc))
+                             (success (zerop status)))
+                        (if success (mason--info "%s(%s): Finished with status %s" cmd id status)
+                          (mason--error "%s(%s): Failed with status %s" cmd id status))
+                        (when (functionp then)
+                          (funcall then success))))))))
+      (mason--info "%s(%s): %s" (car cmd) (process-id proc) msg))))
 
 (cl-defmacro mason--process2 (cmd &optional &key env cwd then)
   "To be used as `mason--process' :then.  CMD ENV CWD THEN ON-FAILURE."
@@ -1451,7 +1453,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
        (lambda (success)
          (if (not success)
              (funcall callback2 nil)
-           (mason--wrap-error callback2 (not uninstall)
+           (mason--wrap-error callback2 nil
              (when bin
                (maphash
                 (lambda (key val-raw)
@@ -1470,7 +1472,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
                 bin))
              (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
              (when opt (mason--link-share-opt "opt" opt spec-id-ctx source-id package-dir uninstall))
-             (when uninstall
+             (if (not uninstall) (funcall callback2 t)
                (mason--process
                  (mason--emacs-cmd `(mason--delete-directory ,package-dir t))
                  :then callback2)))))))))
