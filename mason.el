@@ -29,7 +29,8 @@
 
 ;;; Code:
 
-(require 'cl-macs)
+(require 'ansi-color)
+(require 'cl-lib)
 (require 'json)
 (require 'seq)
 (require 's)
@@ -102,7 +103,7 @@ Defaults to 1 week."
     (with-current-buffer (mason-buffer)
       (read-only-mode -1)
       (goto-char (point-max))
-      (insert (propertize (format-time-string "[%Y-%m-%d %H:%M:%S] ") 'face 'mason-log-time))
+      (insert (propertize (format-time-string "[%F %T] ") 'face 'mason-log-time))
       (when mason-dry-run (insert (propertize "[DRY] " 'face 'mason-log-time)))
       (insert (propertize (concat prefix formatted) 'face face) "\n")
       (read-only-mode 1))
@@ -180,7 +181,6 @@ FN SUCCESS BODY."
 (defun mason--process-filter (proc string)
   "PROC STRING filter."
   (when (buffer-live-p (process-buffer proc))
-    (require 'ansi-color)
     (setq string (replace-regexp-in-string (rx ?\r (** 0 1 ?\n)) "\n"
                                            (ansi-color-filter-apply string)))
     (with-current-buffer (process-buffer proc)
@@ -271,7 +271,7 @@ See `call-process' INFILE and DESTINATION for IN and OUT."
      (if mason-dry-run
          (funcall fn)
        (with-current-buffer buffer
-         (make-thread fn name t)))))
+         (make-thread fn name)))))
 
 (defun mason--is-cygwin ()
   "Returns non nil if `system-type' is cygwin."
@@ -1091,8 +1091,8 @@ Expand BUILD[env] with ID."
           "$"))
 
 (mason--source! github (:namespace must)
-  (let ((has-asset (hash-table-contains-p "asset" source))
-        (has-build (hash-table-contains-p "build" source)))
+  (let ((has-asset (gethash "asset" source))
+        (has-build (gethash "build" source)))
     (cond
      ((and has-asset has-build)
       (error "Source `%s' has both `asset' and `build' recipe" id-raw))
@@ -1137,8 +1137,8 @@ Expand BUILD[env] with ID."
 
 (mason--source! generic (:namespace optional
                          :version optional)
-  (let ((has-download (hash-table-contains-p "download" source))
-        (has-build (hash-table-contains-p "build" source)))
+  (let ((has-download (gethash "download" source))
+        (has-build (gethash "build" source)))
     (cond
      ((and has-download has-build)
       (error "Source `%s' has both `asset' and `build' recipe" id-raw))
@@ -1560,8 +1560,8 @@ indicating the package success to install."
   (if (and package (not interactive))
       (mason--install-0 (gethash package mason--registry) force nil nil callback)
     (mason--ask-package "Mason Install"
-                        (lambda (p) (and (not (hash-table-contains-p p mason--installed))
-                                         (not (hash-table-contains-p p mason--pending))))
+                        (lambda (p) (and (null (gethash p mason--installed))
+                                         (null (gethash p mason--pending))))
                         (lambda (p) (mason--install-0 p nil t nil callback)))))
 
 ;;;###autoload
