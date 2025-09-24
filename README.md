@@ -1,4 +1,4 @@
-# mason.el - Work In Progress
+# mason.el
 
 mason.el is installer for LSP servers, DAP servers, linters and formatters,
 inspired by [mason.nvim](https://github.com/mason-org/mason.nvim).
