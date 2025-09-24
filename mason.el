@@ -63,30 +63,66 @@ Defaults to 1 week."
   "Wheter to show deprecated packages."
   :type 'boolean :group 'mason)
 
+(defface mason-log-time    '((t . (:inherit shadow)))  "Log timestamp."   :group 'mason)
+(defface mason-log-info    '((t))                      "Log level info."  :group 'mason)
+(defface mason-log-warn    '((t . (:inherit warning))) "Log level warn."  :group 'mason)
+(defface mason-log-error   '((t . (:inherit error)))   "Log level error." :group 'mason)
+(defface mason-log-success '((t . (:inherit success))) "Log level error." :group 'mason)
+
 
 ;; Utility Functions
 
-(defconst mason-buffer "*mason*")
+(define-derived-mode mason-log-mode special-mode "Mason Log"
+  :interactive nil)
+
+(defconst mason-buffer " *mason*")
 (defun mason-buffer ()
   "Get mason buffer."
   (or (get-buffer mason-buffer)
       (with-current-buffer (get-buffer-create mason-buffer)
-        (fundamental-mode)
+        (mason-log-mode)
         (read-only-mode 1)
         (current-buffer))))
 
-(defun mason--msg (format &rest args)
-  "Message with prefix.  See `message' FORMAT ARGS."
+;;;###autoload
+(defun mason-log ()
+  "Show the Mason Log buffer."
+  (interactive)
+  (pop-to-buffer (mason-buffer)))
+
+(defun mason--echo (format &rest args)
+  "Add message FORMAT ARGS to echo area."
+  (let ((message-log-max nil))
+    (message format args)))
+
+(defun mason--log (face prefix format args)
+  "Log with FACE, PREFIX, FORMAT, and ARGS."
   (let ((formatted (apply #'format-message format args)))
     (message "%s" formatted)
     (with-current-buffer (mason-buffer)
       (read-only-mode -1)
       (goto-char (point-max))
-      (insert (format-time-string "[%Y-%m-%d %H:%M:%S] "))
-      (when mason-dry-run (insert "[DRY] "))
-      (insert formatted "\n")
+      (insert (propertize (format-time-string "[%Y-%m-%d %H:%M:%S] ") 'face 'mason-log-time))
+      (when mason-dry-run (insert (propertize "[DRY] " 'face 'mason-log-time)))
+      (insert (propertize (concat prefix formatted) 'face face) "\n")
       (read-only-mode 1))
     formatted))
+
+(defun mason--info (format &rest args)
+  "Log FORMAT ARGS with info level."
+  (mason--log 'mason-log-info "" format args))
+
+(defun mason--warn (format &rest args)
+  "Log FORMAT ARGS with warn level."
+  (mason--log 'mason-log-warn "WARNING: " format args))
+
+(defun mason--error (format &rest args)
+  "Log FORMAT ARGS with error level."
+  (mason--log 'mason-log-error "ERROR: " format args))
+
+(defun mason--success (format &rest args)
+  "Log FORMAT ARGS with info level."
+  (mason--log 'mason-log-success "" format args))
 
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."
@@ -108,7 +144,7 @@ If SUCCESS, also call FN with argument t when BODY succeeded."
            ,(when success
               `(when fnp (funcall fn t))))
        ((error debug)
-        (mason--msg "ERROR: %s" (error-message-string err))
+        (mason--error "%s" (error-message-string err))
         (when fnp (funcall fn nil))))))
 
 (defmacro mason--wrap-error-at-main (fn success &rest body)
@@ -130,7 +166,8 @@ FN SUCCESS BODY."
 (defmacro mason--process-output! ()
   "Copy output of process from BUFFER to buffer command `mason-buffer'."
   `(progn
-     (mason--msg "`%s' %s with status %s" msg (if success "finished" "failed") status)
+     (if success (mason--info "`%s' finished with status %s" msg status)
+       (mason--error "`%s' failed with status %s" msg status))
      (with-current-buffer (mason-buffer)
        (let ((start (point-max)))
          (read-only-mode -1)
@@ -138,8 +175,7 @@ FN SUCCESS BODY."
          (insert-buffer-substring buffer)
          (indent-rigidly start (point) 8)
          (read-only-mode 1)))
-     (kill-buffer buffer)
-     (unless success (error "Failed `%s'" msg))))
+     (kill-buffer buffer)))
 
 (defun mason--process-filter (proc string)
   "PROC STRING filter."
@@ -174,8 +210,8 @@ THEN needs to accept a parameter, indicating if the process succeeded."
         (let ((k (car e)) (v (cdr e)))
           (push (concat k "=" v) process-environment)
           (setq msg (concat k "=" (mason--quote v) " " msg)))))
-    (if cwd (mason--msg "Calling `%s' at `%s'" msg cwd)
-      (mason--msg "Calling `%s'" msg))
+    (if cwd (mason--info "Calling `%s' at `%s'" msg cwd)
+      (mason--info "Calling `%s'" msg))
     (when mason-dry-run
       (when (functionp then) (funcall then t))
       (cl-return-from mason--process nil))
@@ -212,7 +248,7 @@ See `call-process' INFILE and DESTINATION for IN and OUT."
   (let ((prog (car cmd))
         (msg (mapconcat #'mason--quote cmd " "))
         buffer status success)
-    (mason--msg "Calling `%s'" msg)
+    (mason--info "Calling `%s'" msg)
     (when mason-dry-run (cl-return-from mason--process-sync nil))
     (unless (executable-find prog)
       (error "Missing program `%s'" prog))
@@ -448,7 +484,7 @@ https://github.com/package-url/purl-spec"
 (defun mason--download (url newname &optional ok-if-already-exists)
   "Copy URL to NEWNAME.
 OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
-  (mason--msg "Downloading %s to %s" url newname)
+  (mason--info "Downloading %s to %s" url newname)
   (or mason-dry-run (url-copy-file url newname ok-if-already-exists)))
 
 (defun mason--delete-directory (path &optional recursive ignore-dry-run)
@@ -456,14 +492,14 @@ OK-IF-ALREADY-EXISTS is the same in `url-copy-file'."
 If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
   (when (or (not mason-dry-run) ignore-dry-run)
     (delete-directory path recursive nil))
-  (mason--msg "Deleted `%s'" (directory-file-name path)))
+  (mason--info "Deleted `%s'" (directory-file-name path)))
 
 (defun mason--delete-file (path &optional ignore-dry-run)
   "Delete file at PATH.
 If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
   (when (or (not mason-dry-run) ignore-dry-run)
     (delete-file path))
-  (mason--msg "Deleted `%s'" path))
+  (mason--info "Deleted `%s'" path))
 
 (defun mason--download-maybe-extract (url dest)
   "Download file from URL.
@@ -485,7 +521,7 @@ See `mason--extract-strategies'."
                        (setq dest (mason--expand-child-file-name filename dest))))
               (make-directory (file-name-parent-directory dest) t)
               (copy-file tmp-file dest))
-            (mason--msg "Copied `%s' to `%s'" tmp-file dest)))
+            (mason--info "Copied `%s' to `%s'" tmp-file dest)))
       (when (file-directory-p tmp-dir)
         (ignore-errors (mason--delete-directory tmp-dir t t))))))
 
@@ -524,7 +560,7 @@ Returns the modified PATH, added with .bat extension in Windows."
             (insert c "\n"))))
       (unless windows
         (set-file-modes path #o755)))
-    (mason--msg "Made shell script at `%s'" path)
+    (mason--info "Made shell script at `%s'" path)
     path))
 
 (defun mason--shell-env (env)
@@ -559,7 +595,7 @@ Delete existing file if OVERWRITE is not nil."
     (when (and overwrite (file-exists-p path))
       (mason--delete-file path))
     (make-symbolic-link target path))
-  (mason--msg "Made symlink at `%s' that links to `%s'" path target))
+  (mason--info "Made symlink at `%s' that links to `%s'" path target))
 
 
 ;; Expression Expanders
@@ -673,7 +709,7 @@ See `mason--proc-to-sexp' for TRANSFORMER."
                                  (lambda (exp)
                                    (eval (read (mason--pipe-to-sexp exp #'mason--expand-transformer)) t)))))
     (unless (string= str expanded-str)
-      (mason--msg "Expanded `%s' to `%s'" str expanded-str))
+      (mason--info "Expanded `%s' to `%s'" str expanded-str))
     expanded-str))
 
 (defun mason--expand-transformer (type string)
@@ -699,7 +735,7 @@ See `mason--proc-to-sexp' for TRANSFORMER."
     (dolist (p path)
       (setq tree (when tree (gethash p tree))))
     (unless tree
-      (mason--msg "Missing variable `%s'" var))
+      (mason--warn "Missing variable `%s'" var))
     (or tree "")))
 
 
@@ -739,7 +775,7 @@ If not, simply move FILE to DEST."
     (unwind-protect
         (let ((fn (nth 2 (seq-find (lambda (x) (string-match-p (car x) file)) mason--extractors))))
           (when fn
-            (mason--msg "Extracting `%s' to `%s' using `%s'" file tmp-dir (symbol-name fn))
+            (mason--info "Extracting `%s' to `%s' using `%s'" file tmp-dir (symbol-name fn))
             (unless mason-dry-run
               (funcall fn file tmp-dir)
               (let ((result (directory-files tmp-dir 'full directory-files-no-dot-files-regexp)))
@@ -898,7 +934,7 @@ See `mason--target-match'"
                    (setq target (vector target)))
                  (seq-some (lambda (x)
                              (when (mason--target-match x)
-                               (mason--msg "Target `%s' chosen" x)
+                               (mason--info "Target `%s' chosen" x)
                                t))
                            target)))
              val))
@@ -1311,7 +1347,7 @@ WIN-EXT is the extension to adds when on windows."
           (make-directory dest t)
           (mason--download-maybe-extract url dest)
           (dolist (file (directory-files dest 'full "\\.json\\'"))
-            (mason--msg "Reading registry %s" file)
+            (mason--info "Reading registry %s" file)
             (with-temp-buffer
               (insert-file-contents file)
               (goto-char (point-min))
@@ -1323,7 +1359,7 @@ WIN-EXT is the extension to adds when on windows."
         (prin1 reg (current-buffer)))
       (mason--run-at-main
         (setq mason--registry reg)
-        (mason--msg "Mason registry updated")))))
+        (mason--info "Mason registry updated")))))
 
 ;;;###autoload
 (defun mason-ensure ()
@@ -1349,7 +1385,7 @@ WIN-EXT is the extension to adds when on windows."
               (setq reg (read (current-buffer))))
             (mason--run-at-main
               (setq mason--registry reg)
-              (mason--msg "Mason ready"))))))))
+              (mason--info "Mason ready"))))))))
 
 (defvar mason--ask-package-prompt nil)
 (defvar mason--ask-package-callback nil)
@@ -1382,7 +1418,7 @@ WIN-EXT is the extension to adds when on windows."
 
 (mason--filter! "c" mason-filter-category
   (let* ((completion-extra-properties nil)
-         (cat (completing-read "Category: " (mason--get-category-list) nil t)))
+         (cat (completing-read "Category: " (mason--get-category-list) nil t nil nil "All")))
     (unless (string-empty-p cat)
       (setq mason--ask-package-category (if (string= cat "All") nil cat)))))
 
@@ -1391,7 +1427,7 @@ WIN-EXT is the extension to adds when on windows."
 
 (mason--filter! "l" mason-filter-language
   (let* ((completion-extra-properties nil)
-         (lang (completing-read "Language: " (mason--get-language-list) nil t)))
+         (lang (completing-read "Language: " (mason--get-language-list) nil t nil nil "All")))
     (unless (string-empty-p lang)
       (setq mason--ask-package-language (if (string= lang "All") nil lang)))))
 
@@ -1441,7 +1477,7 @@ Call CALLBACK with the selected package spec."
          (completion-extra-properties '(:affixation-function mason--ask-package-affixation-function))
          (pkg
           (minibuffer-with-setup-hook
-              (lambda () (when filter-key (message "%s to open menu" (key-description filter-key))))
+              (lambda () (when filter-key (mason--echo (substitute-command-keys (format "\\`%s' to open menu" (key-description filter-key))))))
             (completing-read
              (concat
               mason--ask-package-prompt
@@ -1475,7 +1511,7 @@ Call CALLBACK with the selected package spec."
   "Run BODY with `mason--installed' as the registry."
   (declare (indent defun))
   `(if (= (hash-table-count mason--installed) 0)
-       (mason--msg "No package has been installed")
+       (mason--info "No package has been installed")
      (let ((mason--registry mason--installed)
            (mason-show-deprecated t)
            mason--package-list mason--category-list mason--language-list)
@@ -1568,7 +1604,7 @@ indicating the package success to updated."
              mason--installed)
     (cond
      ((= 0 (hash-table-count filtered))
-      (mason--msg "No update available"))
+      (mason--info "No update available"))
      ((and package (not interactive))
       (mason-uninstall package nil (funcall install package)))
      (t (mason--with-installed
@@ -1612,8 +1648,8 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
                            "Package `%s' is deprecated since `%s' with the message:\n\t%s\nInstall anyway? "
                            name (gethash "since" deprecation) (gethash "message" deprecation)))
           (error "Cancelled")))
-      (if uninstall (mason--msg "Uninstalling package `%s'" name)
-        (mason--msg "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
+      (if uninstall (mason--info "Uninstalling package `%s'" name)
+        (mason--info "Installing package `%s' from source `%s'" name (url-unhex-string source-id-raw)))
       (when (not (fboundp source-fn))
         (error "Unsupported source type `%s' in id `%s'" source-type source-id-raw))
       (when (and (not uninstall)
@@ -1630,8 +1666,8 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
     (setq callback2
           (lambda (success)
             (remhash name mason--pending)
-            (if success (mason--msg "%s `%s'" (if uninstall "Uninstalled" "Installed") name)
-              (mason--msg "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
+            (if success (mason--success "%s `%s'" (if uninstall "Uninstalled" "Installed") name)
+              (mason--error "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
             (when (functionp callback) (funcall callback success))))
     (mason--wrap-error callback2 nil
       (funcall
@@ -1653,7 +1689,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
                         (error "Unsupported binary `%s'" val-raw))
                       (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
                              (bin-link (mason--expand-child-file-name key bin-dir)))
-                        (mason--msg "Resolving binary `%s'" val-raw)
+                        (mason--info "Resolving binary `%s'" val-raw)
                         (funcall bin-fn package-dir bin-link bin-path uninstall)))))
                 bin))
              (when share (mason--link-share-opt "share" share spec-id-ctx source-id package-dir uninstall))
@@ -1667,7 +1703,7 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
 (defun mason--link-share-opt (dest-dir table spec-id-ctx source-id package-dir uninstall)
   "Link share or opt DEST-DIR from hash TABLE relative to PACKAGE-DIR.
 Expand TABLE from SPEC-ID-CTX and SOURCE-ID, if necessary."
-  (mason--msg "Symlinking %s" dest-dir)
+  (mason--info "Symlinking %s" dest-dir)
   (setq dest-dir (mason--expand-child-file-name dest-dir mason-dir))
   (maphash
    (lambda (link-dest link-source)
@@ -1734,7 +1770,7 @@ Call CALLBACK with success and total packages."
       (read-only-mode -1)
       (erase-buffer)
       (read-only-mode 1))
-    (mason--msg "Started dry run test in `%s'" mason-dir)
+    (mason--info "Started dry run test in `%s'" mason-dir)
     (setq
      installer
      (lambda (success)
@@ -1749,9 +1785,9 @@ Call CALLBACK with success and total packages."
                             (run-at-time
                              0 nil (lambda ()
                                      (funcall installer s)))))
-         (mason--msg "Installed %d/%d packages, failed packages\n%s%S"
-                     success-count total-count
-                     (s-repeat 8 " ") (nreverse failed))
+         (mason--info "Installed %d/%d packages, failed packages\n%s%S"
+                      success-count total-count
+                      (s-repeat 8 " ") (nreverse failed))
          (delete-directory mason-dir)
          (setq mason-dry-run prev-dry-run
                mason-dir prev-mason-dir)
