@@ -1,4 +1,4 @@
-;;; mason.el --- Mason                               -*- lexical-binding: t; -*-
+;;; mason.el --- Mason -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025  Dimas Firmansyah
 
