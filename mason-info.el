@@ -40,14 +40,15 @@
 (defface mason-info-header '((t (:height 2.0 :inherit outline-1))) "Header." :group 'mason-info)
 (defface mason-info-subheader '((t (:height 1.5 :inherit outline-2))) "Subheader." :group 'mason-info)
 (defface mason-info-section '((t (:weight bold))) "Package section." :group 'mason-info)
+(defface mason-info-deprecated '((t (:inherit error))) "Deprecated." :group 'mason-info)
 
 (defface mason-info-key '((t (:inherit font-lock-keyword-face))) "Property key." :group 'mason-info)
 (defface mason-info-array '((t (:inherit font-lock-type-face))) "Property key." :group 'mason-info)
 
-(defconst mason-info-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [remap revert-buffer] #'mason-info-update)
-    map))
+(mason--keymap! mason-info-mode-map
+  [remap quit-window]   kill-buffer-and-window
+  [remap revert-buffer] mason-info-update
+  "r"                   mason-info-update)
 
 (define-derived-mode mason-info-mode special-mode "Mason Info"
   :interactive nil)
@@ -61,6 +62,7 @@
   "Visit Mason info file for PACKAGE.
 If INTERACTIVE, ask for PACKAGE."
   (interactive '(nil nil))
+  (mason--assert-ensured)
   (if (and package (not interactive))
       (mason-info--0 (gethash package mason--registry))
     (mason--ask-package "Mason Info" #'identity #'mason-info--0)))
@@ -70,17 +72,28 @@ If INTERACTIVE, ask for PACKAGE."
   "Update current `mason-info-mode' buffer."
   (interactive nil mason-info-mode)
   (when mason-info--pkg
-    (mason-info--0 (gethash mason-info--pkg mason--registry))))
+    (let* ((line (line-beginning-position))
+           (char (current-column))
+           max-char)
+      (mason-info--0 (gethash mason-info--pkg mason--registry))
+      (goto-char line)
+      (setq max-char (save-excursion
+                       (end-of-line)
+                       (current-column)))
+      (forward-char (min char max-char)))))
 
 (defun mason-info--0 (spec)
   "Implementation of `mason-info' SPEC."
   (let* ((name (gethash "name" spec))
-         (description (gethash "description" spec))
+         (description (string-trim (gethash "description" spec)))
          (registry (gethash "registry" spec))
          (homepage (gethash "homepage" spec))
          (licenses (gethash "licenses" spec))
          (languages (gethash "languages" spec))
          (categories (gethash "categories" spec))
+         (deprecation (gethash "deprecation" spec))
+         (deprecation-since (when deprecation (gethash "since" deprecation)))
+         (deprecation-message (when deprecation (gethash "message" deprecation)))
          (installed (gethash name mason--installed))
          (log (gethash name mason--log))
          (buf (get-buffer-create (format "*mason info for %s*" name))))
@@ -92,7 +105,13 @@ If INTERACTIVE, ask for PACKAGE."
       (insert
        (propertize name 'face 'mason-info-header) ?\n
        description ?\n
-       ?\n
+       ?\n)
+      (when deprecation
+        (insert
+         (propertize (format "Deprecated since %s" deprecation-since) 'face 'mason-info-deprecated) ?\n
+         deprecation-message ?\n
+         ?\n))
+      (insert
        (mason--info-section "registry  : ") registry ?\n
        (mason--info-section "homepage  : ") (buttonize homepage #'browse-url homepage) ?\n
        (mason--info-section "licenses  : ") (mapconcat #'identity licenses ", ") ?\n
@@ -109,7 +128,9 @@ If INTERACTIVE, ask for PACKAGE."
         (insert "\n\n" (propertize "logs" 'face 'mason-info-subheader))
         (dolist (l (reverse log))
           (insert ?\n l)))
+      (insert ?\n)
       (read-only-mode 1)
+      (goto-char (point-min))
       (pop-to-buffer buf)
       (setq-local mason-info--pkg name))))
 
@@ -131,6 +152,14 @@ If INTERACTIVE, ask for PACKAGE."
       (insert "\n\n" (mason--info-section "opt:"))
       (mason-info--table opt))))
 
+(defun mason-info--str (str &optional depth)
+  "Insert STR with DEPTH."
+  (setq depth (or depth 0)
+        str (string-trim str))
+  (if (not (s-contains-p "\n" str)) (insert str)
+    (let ((spc (make-string (* depth 2) ?\s)))
+      (insert "\n" spc (replace-regexp-in-string "\n" (concat "\n" spc) str)))))
+
 (defun mason-info--table (table &optional depth ignore-first-depth)
   "TABLE info with DEPTH and IGNORE-FIRST-DEPTH."
   (setq depth (or depth 0))
@@ -139,11 +168,11 @@ If INTERACTIVE, ask for PACKAGE."
                  (setq ignore-first-depth nil)
                (insert ?\n (make-string (* 2 depth) ?\s)))
              (insert (propertize (concat key ":") 'face 'mason-info-key))
-             (if (stringp val) (insert " " val)
-               (cond
-                ((vectorp val) (mason-info--vector val (1+ depth)))
-                ((hash-table-p val) (mason-info--table val (1+ depth)))
-                (t (error "Invalid val `%S'" val)))))
+             (cond
+              ((stringp val) (insert " ") (mason-info--str val (1+ depth)))
+              ((vectorp val) (mason-info--vector val (1+ depth)))
+              ((hash-table-p val) (mason-info--table val (1+ depth)))
+              (t (error "Invalid val `%S'" val))))
            table))
 
 (defun mason-info--vector (vec &optional depth ignore-first-depth)
@@ -155,7 +184,7 @@ If INTERACTIVE, ask for PACKAGE."
             (insert ?\n (make-string (* 2 depth) ?\s)))
           (insert (propertize (concat "- ") 'face 'mason-info-array))
           (cond
-           ((stringp val) (insert val))
+           ((stringp val) (mason-info--str val (1+ depth)))
            ((vectorp val) (mason-info--vector val (1+ depth) t))
            ((hash-table-p val) (mason-info--table val (1+ depth) t))
            (t (error "Invalid val `%S'" val))))

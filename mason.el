@@ -60,6 +60,20 @@ Defaults to 1 week."
 
 ;; Utility Functions
 
+(defmacro mason--keymap! (map &rest binds)
+  "Define a keymap MAP with BINDS."
+  (declare (indent defun))
+  (unless (evenp (length binds))
+    (error "BINDS must be even"))
+  `(progn
+     (defconst ,map (make-sparse-keymap))
+     ,@(cl-loop for (k v) on binds by #'cddr
+                collect `(define-key ,map ,(if (stringp k) `(kbd ,k) k) ',v))
+     (with-eval-after-load 'evil
+       (when (fboundp 'evil-define-key*)
+         ,@(cl-loop for (k v) on binds by #'cddr
+                    collect `(evil-define-key* 'normal ,map ,(if (stringp k) `(kbd ,k) k) ',v))))))
+
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."
   (declare (indent defun))
@@ -116,8 +130,7 @@ THEN needs to accept a parameter, indicating if the process succeeded."
   (declare (indent defun))
   (let ((prog (car cmd))
         (msg (mapconcat #'mason--quote cmd " "))
-        (process-environment process-environment)
-        buffer)
+        (process-environment process-environment))
     (when env
       (dolist (e (nreverse env))
         (let ((k (car e)) (v (cdr e)))
@@ -131,13 +144,10 @@ THEN needs to accept a parameter, indicating if the process succeeded."
       (cl-return-from mason--process nil))
     (unless (executable-find prog)
       (error "Missing program `%s'" prog))
-    (setq buffer (generate-new-buffer "*mason process*"))
-    (with-current-buffer buffer (read-only-mode 1))
     (let* ((default-directory (or (when cwd (expand-file-name cwd))
                                   default-directory))
            (proc (make-process
                   :name "mason"
-                  :buffer buffer
                   :filter #'mason--process-filter
                   :command cmd
                   :sentinel
@@ -674,6 +684,7 @@ Inside BODY, one can reference:
               (id-subpath    (gethash "subpath" id)))
          (ignore name id source spec m-qualifiers
                  id-raw id-scheme id-type id-namespace id-name id-version id-qualifiers id-subpath)
+         (remhash "version_overrides" source)
          (let ((platforms (gethash "supported_platforms" source)))
            (when platforms
              (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
@@ -897,8 +908,7 @@ Expand BUILD[env] with ID."
                         (funcall next nil))))))))
      (t (error "Source `%s' has no `asset' nor `build'" id-raw)))))
 
-(mason--source! generic (:namespace optional
-                         :version optional)
+(mason--source! generic (:namespace optional)
   (let ((has-download (gethash "download" source))
         (has-build (gethash "build" source)))
     (cond
@@ -1157,8 +1167,8 @@ WIN-EXT is the extension to adds when on windows."
 (defvar mason--ask-package-input nil)
 
 (define-prefix-command 'mason-filter-map)
-(defvar-keymap mason--ask-package-transient-map
-  "M-m" 'mason-filter-map)
+(mason--keymap! mason--ask-package-transient-map
+  "M-m" mason-filter-map)
 
 (defmacro mason--filter! (key name &rest body)
   "Create a filter function NAME of BODY, assign it to KEY."
@@ -1175,7 +1185,7 @@ WIN-EXT is the extension to adds when on windows."
          (exit-minibuffer))
        ,@body
        (mason--ask-package-0))
-     (keymap-set 'mason-filter-map ,key #',name)))
+     (define-key mason-filter-map ,key #',name)))
 
 (mason--filter! "c" mason-filter-category
   (let* ((completion-extra-properties nil)
@@ -1287,8 +1297,8 @@ If INTERACTIVE, ask for PACKAGE and FORCE.
 CALLBACK is a function that will be called with one argument,
 indicating the package success to install."
   (interactive '(nil nil t nil))
-  (if (and package (not interactive))
-      (mason--install-0 (gethash package mason--registry) force nil nil callback)
+  (if (or package (not interactive))
+      (mason--install-0 (gethash package mason--registry) force interactive nil callback)
     (mason--ask-package "Mason Install"
                         (lambda (p) (and (null (gethash p mason--installed))
                                          (null (gethash p mason--pending))))
@@ -1302,8 +1312,8 @@ If INTERACTIVE, ask for PACKAGE.
 CALLBACK is a function that will be called with one argument,
 indicating the package success to uninstall."
   (interactive '(nil t nil))
-  (if (and package (not interactive))
-      (mason--install-0 (gethash package mason--installed) nil nil t callback)
+  (if (or package (not interactive))
+      (mason--install-0 (gethash package mason--installed) nil interactive t callback)
     (mason--with-installed
       (mason--ask-package "Mason Uninstall"
                           #'identity
@@ -1394,6 +1404,8 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
               (mason--delete-directory package-dir t)
             (error "Cancelled")))))
     (puthash name t mason--pending)
+    (when (fboundp 'mason-manager--update)
+      (mason-manager--update name))
     (setq callback2
           (lambda (success)
             (remhash name mason--pending)
@@ -1405,6 +1417,8 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
                   (puthash name spec mason--installed))
                 (with-temp-file (mason--expand-child-file-name "index" packages-dir)
                   (prin1 mason--installed (current-buffer)))))
+            (when (fboundp 'mason-manager--update)
+              (mason-manager--update name (not success)))
             (when (functionp callback) (funcall callback success))))
     (mason--wrap-error callback2 nil
       (funcall
