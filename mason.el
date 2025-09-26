@@ -120,9 +120,9 @@ FN SUCCESS BODY."
         (mason--info "%s(%d): %s" (car (process-command proc)) (process-id proc) line)))
     (process-put proc :accumulator acc)))
 
-(cl-defun mason--process (cmd &optional &key env cwd then)
+(cl-defun mason--process (cmd &optional &key env cwd filter then)
   "Run process CMD asynchronously.
-CMD is argument list as specified in `make-process' :command.
+See `make-process' for CMD and FILTER.
 ENV is alist of environment variable to add to `process-environment'.
 CWD is the working directory.
 THEN is a function to call after process succeed.
@@ -148,7 +148,11 @@ THEN needs to accept a parameter, indicating if the process succeeded."
                                   default-directory))
            (proc (make-process
                   :name "mason"
-                  :filter #'mason--process-filter
+                  :filter
+                  (if (not (functionp filter)) #'mason--process-filter
+                    (lambda (proc string)
+                      (funcall filter proc string)
+                      (mason--process-filter proc string)))
                   :command cmd
                   :sentinel
                   (lambda (proc _)
@@ -165,25 +169,13 @@ THEN needs to accept a parameter, indicating if the process succeeded."
       (process-put proc :pkg mason--log-pkg)
       (mason--info "%s(%s): %s" (car cmd) (process-id proc) msg))))
 
-(cl-defmacro mason--process2 (cmd &optional &key env cwd then)
-  "To be used as `mason--process' :then.  CMD ENV CWD THEN ON-FAILURE."
+(cl-defmacro mason--process2 (cmd &optional &key env cwd filter then)
+  "To be used as `mason--process' :then.
+See `mason--process' for CMD ENV CWD FILTER THEN."
   (declare (indent defun))
   `(lambda (success)
      (if (not success) (funcall ,then nil)
-       (mason--process ,cmd :env ,env :cwd ,cwd :then ,then))))
-
-(defmacro mason--async (&rest body)
-  "Run BODY on separate thread."
-  (declare (indent defun))
-  `(let* ((buffer (generate-new-buffer "*mason async*"))
-          (name (buffer-name buffer))
-          (fn (lambda ()
-                (unwind-protect (progn ,@body)
-                  (mason--run-at-main (kill-buffer buffer))))))
-     (if mason-dry-run
-         (funcall fn)
-       (with-current-buffer buffer
-         (make-thread fn name)))))
+       (mason--process ,cmd :env ,env :cwd ,cwd :filter ,filter :then ,then))))
 
 (defconst mason--cmd-load-path (file-name-directory (or load-file-name buffer-file-name)))
 (defun mason--emacs-cmd (&rest body)
@@ -199,52 +191,19 @@ To be used with `mason--process' and `mason--process-sync'."
             (setq mason-dry-run ,mason-dry-run)
             ,@body))))
 
-(defun mason--is-cygwin ()
-  "Returns non nil if `system-type' is cygwin."
-  (eq system-type 'cygwin))
-
-(defun mason--is-windows (&optional cygwin)
-  "Returns non nil if `system-type' is windows-nt.
-Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
-  (or (eq system-type 'windows-nt)
-      (and cygwin (mason--is-cygwin))))
-
 (defvar mason--target nil)
-(defun mason--update-target ()
-  "Update target detection."
-  (let (os arch libc)
-    (cond
-     ((or (mason--is-windows t))
-      (setq os '("windows")
-            arch (let* ((pa (getenv "PROCESSOR_ARCHITECTURE"))
-                        (wa (getenv "PROCESSOR_ARCHITEW6432"))
-                        (ar (or wa pa "")))
-                   (cond
-                    ((string-match-p (rx bow (or "AMD64" "x86_64" "X86-64") eow) ar) "x64")
-                    ((string-match-p (rx bow "ARM64" eow) ar) "arm64")
-                    ((string-match-p (rx bow "ARM" eow) arch) "arm32")
-                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) arch) "x86")
-                    (t nil)))
-            libc nil))
-     ((memq system-type '(ms-dos)) (ignore))
-     (t
-      (setq os (cond
-                ((eq system-type 'gnu/linux) '("linux" "unix"))
-                ((eq system-type 'darwin) '("darwin" "unix"))
-                (t '("unix")))
-            arch (let ((uname (string-trim (shell-command-to-string "uname -m 2>/dev/null || true"))))
-                   (cond
-                    ((string-match-p (rx bow (or "x86_64" "amd64" "x64" "x86-64") eow) uname) "x64")
-                    ((string-match-p (rx bow (or "aarch64" "arm64") eow) uname) "arm64")
-                    ((string-match-p (rx bow (or "armv[0-9]+" "armv[0-9]+l" "arm" "armhf" "armel") eow) uname) "arm32")
-                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) uname) "x86")
-                    (t nil)))
-            libc (let ((ldd (shell-command-to-string "ldd --version 2>&1 || true")))
-                   (cond
-                    ((string-match-p "musl" ldd) "musl")
-                    ((string-match-p (rx (or "GNU libc" "glibc" "GNU C Library")) ldd) "gnu")
-                    (t nil))))))
-    (mason--run-at-main (setq mason--target (list os arch libc)))))
+
+(defun mason--update-target (then)
+  "Update target and call THEN."
+  (let ((output ""))
+    (mason--process
+      (mason--emacs-cmd '(message "%S" (mason--get-target)))
+      :filter (lambda (_ o) (setq output (concat output o)))
+      :then
+      (lambda (success)
+        (if (not success) (error "Updating target failed")
+          (setq mason--target (read output))
+          (funcall then))))))
 
 (defun mason--target-match (str)
   "Return non nil when target STR match current target."
@@ -1084,17 +1043,9 @@ WIN-EXT is the extension to adds when on windows."
 
 (defun mason--update-installed ()
   "Update `mason--installed'."
-  (let ((installed-index (mason--expand-child-file-name "packages/index" mason-dir))
-        installed)
-    (if (file-exists-p installed-index)
-        (with-temp-buffer
-          (insert-file-contents installed-index)
-          (goto-char (point-min))
-          (setq installed (read (current-buffer)))
-          (mason--run-at-main
-            (setq mason--installed installed)))
-      (mason--run-at-main
-        (setq mason--installed (mason--make-hash))))))
+  (let ((installed-index (mason--expand-child-file-name "packages/index" mason-dir)))
+    (setq mason--installed (or (mason--read-data installed-index)
+                               (mason--make-hash)))))
 
 ;;;###autoload
 (defun mason-update-registry ()
@@ -1104,33 +1055,42 @@ WIN-EXT is the extension to adds when on windows."
         mason--package-list nil
         mason--category-list nil
         mason--language-list nil)
-  (mason--async
-    (mason--update-target)
-    (mason--update-installed)
-    (let ((reg (mason--make-hash))
-          (reg-dir (mason--expand-child-file-name "registry" mason-dir)))
-      (when (file-directory-p reg-dir)
-        (mason--delete-directory reg-dir t))
-      (dolist (e mason-registries)
-        (let* ((name (car e))
-               (url (cdr e))
-               (dest (mason--expand-child-file-name name reg-dir)))
-          (make-directory dest t)
-          (mason--download-maybe-extract url dest)
-          (dolist (file (directory-files dest 'full "\\.json\\'"))
-            (mason--info "Reading registry %s" file)
-            (with-temp-buffer
-              (insert-file-contents file)
-              (goto-char (point-min))
-              (mapc (lambda (e)
-                      (puthash "registry" name e)
-                      (puthash (gethash "name" e) e reg))
-                    (json-parse-buffer))))))
-      (with-temp-file (mason--expand-child-file-name "index" reg-dir)
-        (prin1 reg (current-buffer)))
-      (mason--run-at-main
-        (setq mason--registry reg)
-        (mason--info "Mason registry updated")))))
+  (mason--update-target
+   (lambda ()
+     (mason--update-installed)
+     (let* ((reg-dir (mason--expand-child-file-name "registry" mason-dir))
+            (reg-index (mason--expand-child-file-name "index" reg-dir)))
+       (mason--process
+         (mason--emacs-cmd
+           `(let ((reg (mason--make-hash))
+                  (regs ',mason-registries)
+                  (reg-dir ,reg-dir)
+                  (reg-index ,reg-index))
+              (when (file-directory-p reg-dir)
+                (mason--delete-directory reg-dir t))
+              (dolist (e regs)
+                (let* ((name (car e))
+                       (url (cdr e))
+                       (dest (mason--expand-child-file-name name reg-dir)))
+                  (make-directory dest t)
+                  (mason--download-maybe-extract url dest)
+                  (dolist (file (directory-files dest 'full "\\.json\\'"))
+                    (mason--info "Reading registry %s" file)
+                    (with-temp-buffer
+                      (insert-file-contents file)
+                      (goto-char (point-min))
+                      (mapc (lambda (e)
+                              (puthash "registry" name e)
+                              (puthash (gethash "name" e) e reg))
+                            (json-parse-buffer))))))
+              (with-temp-file reg-index
+                (prin1 reg (current-buffer)))))
+         :then
+         (lambda (success)
+           (if (not success) (error "Error downloading registry")
+             (setq mason--registry (or (mason--read-data reg-index)
+                                       (mason--make-hash)))
+             (mason--success "Mason registry updated"))))))))
 
 ;;;###autoload
 (defun mason-ensure ()
@@ -1146,17 +1106,11 @@ WIN-EXT is the extension to adds when on windows."
       (setq reg-age (float-time (time-subtract (current-time) reg-time)))
       (if (> reg-age mason-registry-refresh-time)
           (mason-update-registry)
-        (mason--async
-          (mason--update-target)
-          (mason--update-installed)
-          (let (reg)
-            (with-temp-buffer
-              (insert-file-contents reg-index)
-              (goto-char (point-min))
-              (setq reg (read (current-buffer))))
-            (mason--run-at-main
-              (setq mason--registry reg)
-              (mason--info "Mason ready"))))))))
+        (mason--update-target
+         (lambda ()
+           (mason--update-installed)
+           (setq mason--registry (mason--read-data reg-index))
+           (mason--info "Mason ready")))))))
 
 (defvar mason--ask-package-prompt nil)
 (defvar mason--ask-package-callback nil)

@@ -205,6 +205,63 @@ If IGNORE-DRY-RUN, delete anyway even if `mason-dry-run' is non nil."
     (delete-file path))
   (mason--info "Deleted `%s'" path))
 
+(defun mason--read-data (file)
+  "Read lisp-data FILE."
+  (when (file-readable-p file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (read (current-buffer)))))
+
+
+;; Architecture Resolver
+
+(defun mason--is-cygwin ()
+  "Returns non nil if `system-type' is cygwin."
+  (eq system-type 'cygwin))
+
+(defun mason--is-windows (&optional cygwin)
+  "Returns non nil if `system-type' is windows-nt.
+Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
+  (or (eq system-type 'windows-nt)
+      (and cygwin (mason--is-cygwin))))
+
+(defun mason--get-target ()
+  "Get current target architecture."
+  (let (os arch libc)
+    (cond
+     ((or (mason--is-windows t))
+      (setq os '("windows")
+            arch (let* ((pa (getenv "PROCESSOR_ARCHITECTURE"))
+                        (wa (getenv "PROCESSOR_ARCHITEW6432"))
+                        (ar (or wa pa "")))
+                   (cond
+                    ((string-match-p (rx bow (or "AMD64" "x86_64" "X86-64") eow) ar) "x64")
+                    ((string-match-p (rx bow "ARM64" eow) ar) "arm64")
+                    ((string-match-p (rx bow "ARM" eow) arch) "arm32")
+                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) arch) "x86")
+                    (t nil)))
+            libc nil))
+     ((memq system-type '(ms-dos)) (ignore))
+     (t
+      (setq os (cond
+                ((eq system-type 'gnu/linux) '("linux" "unix"))
+                ((eq system-type 'darwin) '("darwin" "unix"))
+                (t '("unix")))
+            arch (let ((uname (string-trim (shell-command-to-string "uname -m 2>/dev/null || true"))))
+                   (cond
+                    ((string-match-p (rx bow (or "x86_64" "amd64" "x64" "x86-64") eow) uname) "x64")
+                    ((string-match-p (rx bow (or "aarch64" "arm64") eow) uname) "arm64")
+                    ((string-match-p (rx bow (or "armv[0-9]+" "armv[0-9]+l" "arm" "armhf" "armel") eow) uname) "arm32")
+                    ((string-match-p (rx bow (or "x86" "i386" "i686") eow) uname) "x86")
+                    (t nil)))
+            libc (let ((ldd (shell-command-to-string "ldd --version 2>&1 || true")))
+                   (cond
+                    ((string-match-p "musl" ldd) "musl")
+                    ((string-match-p (rx (or "GNU libc" "glibc" "GNU C Library")) ldd) "gnu")
+                    (t nil))))))
+    (list os arch libc)))
+
 
 ;; Archive Extractors
 
