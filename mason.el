@@ -63,7 +63,7 @@ Defaults to 1 week."
 (defmacro mason--keymap! (map &rest binds)
   "Define a keymap MAP with BINDS."
   (declare (indent defun))
-  (unless (evenp (length binds))
+  (unless (eq (% (length binds) 2) 0)
     (error "BINDS must be even"))
   `(progn
      (defconst ,map (make-sparse-keymap))

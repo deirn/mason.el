@@ -5,8 +5,6 @@
 ;; Author: Dimas Firmansyah <deirn@bai.lol>
 ;; Version: 1.0.0
 ;; Homepage: https://github.com/deirn/mason.el
-;; Package-Requires: ((emacs "30.1"))
-;; Keywords: tools lsp installer
 ;; This file is not part of GNU Emacs
 
 ;; This program is free software: you can redistribute it and/or modify

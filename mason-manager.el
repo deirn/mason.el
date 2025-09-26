@@ -5,8 +5,6 @@
 ;; Author: Dimas Firmansyah <deirn@bai.lol>
 ;; Version: 1.0.0
 ;; Homepage: https://github.com/deirn/mason.el
-;; Package-Requires: ((emacs "30.1") (mason "1.0.0"))
-;; Keywords: tools lsp installer
 ;; This file is not part of GNU Emacs
 
 ;; This program is free software: you can redistribute it and/or modify
@@ -52,8 +50,8 @@
 ;; Internal Variables
 
 (defconst mason-manager--buffer "*mason manager*")
-(defvar-local mason-manager--rows)
-(defvar-local mason-manager--marked)
+(defvar-local mason-manager--rows nil)
+(defvar-local mason-manager--marked nil)
 
 (defvar mason-manager--category "All")
 (defvar mason-manager--language "All")
@@ -209,8 +207,7 @@
              (mason-manager--header-text "UNS" (if (eq mason-manager--uninstalled 'show) 'mason-manager-package    'shadow) #'mason-manager-toggle-uninstalled) " "
              (mason-manager--header-text "PND" (if (eq mason-manager--pending     'show) 'mason-manager-pending    'shadow) #'mason-manager-toggle-pending) " "
              (mason-manager--header-text "DEP" (if (eq mason-manager--deprecated  'show) 'mason-manager-deprecated 'shadow) #'mason-manager-toggle-deprecated) "   "
-             (substitute-command-keys (format "\\`%s' for help" (key-description (where-is-internal 'mason-manager-show-help mason-manager-map t))))
-             ))
+             (substitute-command-keys (format "\\`%s' for help" (key-description (where-is-internal 'mason-manager-show-help mason-manager-map t))))))
            (add-len (length add)))
       (setq header-line-format
             (concat og (make-string (- max-len og-len add-len 2) ?\s) add)))))
@@ -291,7 +288,7 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                 mason-manager--uninstalled t-uninstalled
                 mason-manager--pending     t-pending
                 mason-manager--deprecated  t-deprecated))
-        (advice-add 'tabulated-list-init-header :after 'mason-manager--header-line-advice)
+        (advice-add #'tabulated-list-init-header :after #'mason-manager--header-line-advice)
         (tabulated-list-init-header)
         (tabulated-list-print)
         (read-only-mode 1)
