@@ -5,7 +5,8 @@ inspired by [mason.nvim](https://github.com/mason-org/mason.nvim).
 
 Package registry at [mason-org/mason-registry](https://github.com/mason-org/mason-registry).
 
-Run `M-x mason-install RET` to install packages.
+- Run `M-x mason-install RET` to install packages.
+- Run `M-x mason-manager RET` to open package manager.
 
 ## Installation
 ### `use-package` with [Elpaca](https://github.com/progfolio/elpaca)
@@ -15,3 +16,8 @@ Run `M-x mason-install RET` to install packages.
   :config
   (mason-ensure))
 ```
+
+## Screenshots
+| ![Mason manager](docs/Screenshot-1.png) | ![Package info](docs/Screenshot-2.png) | ![M-x mason-install](docs/Screenshot-3.png) |
+|:---------------------------------------:|:--------------------------------------:|:-------------------------------------------:|
+| `mason-manager`                         | Package info                           | `mason-install`                             |
