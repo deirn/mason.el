@@ -49,6 +49,22 @@
 (defface mason-manager-category '((t (:inherit font-lock-builtin-face))) "Category filter." :group 'mason-manager)
 
 
+;; Internal Variables
+
+(defconst mason-manager--buffer "*mason manager*")
+(defvar-local mason-manager--rows)
+(defvar-local mason-manager--marked)
+
+(defvar mason-manager--category "All")
+(defvar mason-manager--language "All")
+(defvar mason-manager--installed 'show)
+(defvar mason-manager--uninstalled 'show)
+(defvar mason-manager--pending 'show)
+(defvar mason-manager--deprecated 'hide)
+
+(defvar-local mason-manager--header-line-advice nil)
+
+
 ;; Keymaps
 
 (mason--keymap! mason-manager-map
@@ -168,17 +184,6 @@
 
 ;; The Manager
 
-(defconst mason-manager--buffer "*mason manager*")
-(defvar-local mason-manager--rows)
-(defvar-local mason-manager--marked)
-
-(defvar mason-manager--category "All")
-(defvar mason-manager--language "All")
-(defvar mason-manager--installed 'show)
-(defvar mason-manager--uninstalled 'show)
-(defvar mason-manager--pending 'show)
-(defvar mason-manager--deprecated 'hide)
-
 (define-derived-mode mason-manager-mode tabulated-list-mode "Mason Manager"
   :interactive nil)
 
@@ -189,7 +194,6 @@
   (mason--assert-ensured)
   (mason-manager--0))
 
-(defvar-local mason-manager--header-line-advice nil)
 (defun mason-manager--header-line-advice ()
   "Header line for `mason-manager-mode' OG."
   (when mason-manager--header-line-advice
