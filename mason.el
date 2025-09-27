@@ -403,12 +403,14 @@ To be used with `mason--process' or `mason--process-sync'."
 (defun mason--link (path target &optional overwrite)
   "Create a symbolic link at PATH to TARGET.
 Delete existing file if OVERWRITE is not nil."
-  (unless mason-dry-run
-    (make-directory (file-name-parent-directory path) t)
-    (when (and overwrite (file-exists-p path))
-      (mason--delete-file path))
-    (make-symbolic-link target path))
-  (mason--info "Made symlink at `%s' that links to `%s'" path target))
+  (let* ((parent (file-name-parent-directory path))
+         (target (file-relative-name target parent)))
+    (unless mason-dry-run
+      (make-directory parent t)
+      (when (and overwrite (file-exists-p path))
+        (mason--delete-file path))
+      (make-symbolic-link target path))
+    (mason--info "Made symlink at `%s' that links to `%s'" path target)))
 
 
 ;; Expression Expanders
