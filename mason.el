@@ -110,6 +110,8 @@ FN SUCCESS BODY."
 (defun mason--process-filter (proc string)
   "PROC STRING filter that logs the output."
   (let* ((mason--log-pkg (process-get proc :pkg))
+         (cmd (file-name-nondirectory (car (process-command proc))))
+         (id (process-id proc))
          (acc (or (process-get proc :accumulator) ""))
          (acc (concat acc string))
          line)
@@ -117,7 +119,7 @@ FN SUCCESS BODY."
       (setq line (match-string 1 acc)
             acc (string-remove-prefix (match-string 0 acc) acc))
       (unless (string-empty-p line)
-        (mason--info "%s(%d): %s" (car (process-command proc)) (process-id proc) line)))
+        (mason--info "%s(%d): %s" cmd id line)))
     (process-put proc :accumulator acc)))
 
 (cl-defun mason--process (cmd &optional &key env cwd filter then)
@@ -157,7 +159,7 @@ THEN needs to accept a parameter, indicating if the process succeeded."
                   :sentinel
                   (lambda (proc _)
                     (when (memq (process-status proc) '(exit signal))
-                      (let* ((cmd (car (process-command proc)))
+                      (let* ((cmd (file-name-nondirectory (car (process-command proc))))
                              (id (process-id proc))
                              (status (process-exit-status proc))
                              (success (zerop status))
@@ -167,7 +169,7 @@ THEN needs to accept a parameter, indicating if the process succeeded."
                         (when (functionp then)
                           (funcall then success))))))))
       (process-put proc :pkg mason--log-pkg)
-      (mason--info "%s(%s): %s" (car cmd) (process-id proc) msg))))
+      (mason--info "%s(%s): %s" (file-name-nondirectory (car cmd)) (process-id proc) msg))))
 
 (cl-defmacro mason--process2 (cmd &optional &key env cwd filter then)
   "To be used as `mason--process' :then.
@@ -727,13 +729,12 @@ Expand BUILD[env] with ID."
       (setq extra (gethash "extra" id-qualifiers)))
     (mason--process `("python" "-m" "venv" ,prefix)
       :then
-      (mason--process2 `("pip"
-                         "--python" ,(mason--expand-child-file-name "bin/python" prefix)
+      (mason--process2 `(,(mason--expand-child-file-name "bin/pip" prefix)
                          "install"
-                         "--prefix" ,prefix
                          ,(if extra (format "%s[%s]==%s" id-name extra id-version)
                             (format "%s==%s" id-name id-version))
                          ,@(seq-into (gethash "extra_packages" source) 'list))
+        :cwd prefix
         :then next))))
 
 (mason--source! npm (:namespace optional)
