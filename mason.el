@@ -68,11 +68,7 @@ Defaults to 1 week."
   `(progn
      (defconst ,map (make-sparse-keymap))
      ,@(cl-loop for (k v) on binds by #'cddr
-                collect `(define-key ,map ,(if (stringp k) `(kbd ,k) k) ',v))
-     (with-eval-after-load 'evil
-       (when (fboundp 'evil-define-key*)
-         ,@(cl-loop for (k v) on binds by #'cddr
-                    collect `(evil-define-key* 'normal ,map ,(if (stringp k) `(kbd ,k) k) ',v))))))
+                collect `(define-key ,map ,(if (stringp k) `(kbd ,k) k) ',v))))
 
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."
@@ -1123,7 +1119,9 @@ WIN-EXT is the extension to adds when on windows."
 (defvar mason--ask-package-filter-function nil)
 (defvar mason--ask-package-input nil)
 
-(define-prefix-command 'mason-filter-map)
+(mason--keymap! mason-filter-map)
+(fset 'mason-filter-map mason-filter-map)
+
 (mason--keymap! mason--ask-package-transient-map
   "M-m" mason-filter-map)
 

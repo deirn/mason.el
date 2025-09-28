@@ -293,7 +293,12 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
         (tabulated-list-print)
         (read-only-mode 1)
         (hl-line-mode 1)
-        (use-local-map mason-manager-map)))
+        (use-local-map mason-manager-map)
+        (when (functionp 'evil-local-set-key)
+          (map-keymap
+           (lambda (event fn)
+             (evil-local-set-key 'normal (vector event) fn))
+           mason-manager-map))))
     (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-same-window)))))
 
 (defun mason-manager--name (pkg)
