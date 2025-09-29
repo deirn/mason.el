@@ -38,7 +38,6 @@
   "If not nil, only print messages what mason would do."
   :type 'boolean :group 'mason)
 
-
 
 ;; Macros
 
@@ -91,6 +90,8 @@
   (let ((message-log-max nil))
     (message format args)))
 
+(defvar mason--log-full-message nil)
+
 (defun mason--log (face prefix format args)
   "Log with FACE, PREFIX, FORMAT, and ARGS."
   (let* ((formatted (apply #'format-message format args))
@@ -98,7 +99,9 @@
                (propertize (format-time-string "[%F %T] ") 'face 'mason-log-time)
                (when mason-dry-run (propertize "[DRY] " 'face 'mason-log-time))
                (propertize (concat prefix formatted) 'face face))))
-    (message "%s" formatted)
+    (if mason--log-full-message
+        (message "%s" ins)
+      (message "%s" formatted))
     (when (and mason--log-pkg (not mason-dry-run))
       (puthash mason--log-pkg
                (cons ins (gethash mason--log-pkg mason--log))

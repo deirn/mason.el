@@ -1047,8 +1047,8 @@ WIN-EXT is the extension to adds when on windows."
                                (mason--make-hash)))))
 
 ;;;###autoload
-(defun mason-update-registry ()
-  "Refresh the mason registry."
+(defun mason-update-registry (&optional callback)
+  "Refresh the mason registry then call CALLBACK."
   (interactive)
   (setq mason--registry 'on-process
         mason--package-list nil
@@ -1089,11 +1089,14 @@ WIN-EXT is the extension to adds when on windows."
            (if (not success) (error "Error downloading registry")
              (setq mason--registry (or (mason--read-data reg-index)
                                        (mason--make-hash)))
-             (mason--success "Mason registry updated"))))))))
+             (mason--success "Mason registry updated")
+             (when (functionp callback)
+               (funcall callback)))))))))
 
 ;;;###autoload
-(defun mason-ensure ()
-  "Ensure mason is setup."
+(defun mason-ensure (&optional callback)
+  "Ensure mason is setup.
+Call CALLBACK if it succeded."
   (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
          (reg-index (mason--expand-child-file-name "registry/index" mason-dir))
          (reg-time (file-attribute-modification-time (file-attributes reg-index)))
@@ -1101,15 +1104,17 @@ WIN-EXT is the extension to adds when on windows."
     (setenv "PATH" (concat bin-dir ":" (getenv "PATH")))
     (add-to-list 'exec-path bin-dir)
     (if (null reg-time)
-        (mason-update-registry)
+        (mason-update-registry callback)
       (setq reg-age (float-time (time-subtract (current-time) reg-time)))
       (if (> reg-age mason-registry-refresh-time)
-          (mason-update-registry)
+          (mason-update-registry callback)
         (mason--update-target
          (lambda ()
            (mason--update-installed)
            (setq mason--registry (mason--read-data reg-index))
-           (mason--info "Mason ready")))))))
+           (mason--info "Mason ready")
+           (when (functionp callback)
+             (funcall callback))))))))
 
 (defvar mason--ask-package-prompt nil)
 (defvar mason--ask-package-callback nil)

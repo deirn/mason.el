@@ -1,0 +1,16 @@
+name: Dry Run
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: purcell/setup-emacs@b3884972d55f850449e43be74de08f9a97aa3f34
+      with:
+        version: 30.1
+    - run: emacs -Q --batch -l .github/workflows/dry-run.el
