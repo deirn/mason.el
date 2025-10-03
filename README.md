@@ -18,6 +18,8 @@ Package registry at [mason-org/mason-registry](https://github.com/mason-org/maso
 ```
 
 ## Screenshots
-| ![Mason manager](docs/Screenshot-1.png) | ![Package info](docs/Screenshot-2.png) | ![M-x mason-install](docs/Screenshot-3.png) |
-|:---------------------------------------:|:--------------------------------------:|:-------------------------------------------:|
-| `mason-manager`                         | Package info                           | `mason-install`                             |
+| ![Mason manager](docs/Screenshot-1.png)     | ![Package info](docs/Screenshot-2.png)    |
+|:-------------------------------------------:|:-----------------------------------------:|
+| `mason-manager`                             | Package info                              |
+| ![M-x mason-install](docs/Screenshot-3.png) | ![`M-x mason-log`](docs/Screenshot-4.png) |
+| `mason-install`                             | `mason-log`                               |

@@ -66,8 +66,10 @@
 ;; Keymaps
 
 (mason--keymap! mason-manager-map
+  "?"   mason-manager-show-help
   "q"   quit-window
   "RET" mason-manager-visit
+  "l"   mason-manager-visit
   "u"   mason-manager-unmark
   "U"   mason-manager-unmark-all
   "i"   mason-manager-mark-install
@@ -78,8 +80,7 @@
   "t i" mason-manager-toggle-installed
   "t u" mason-manager-toggle-uninstalled
   "t p" mason-manager-toggle-pending
-  "t d" mason-manager-toggle-deprecated
-  "?"   mason-manager-show-help)
+  "t d" mason-manager-toggle-deprecated)
 
 (defun mason-manager-filter-category ()
   "Filter by category."
@@ -124,7 +125,7 @@
     (tabulated-list-put-tag (propertize tag 'face face) t)))
 
 (defun mason-manager-mark-install ()
-  "Mark package at point to be installed."
+  "Mark package to be installed."
   (interactive nil mason-manager-mode)
   (let ((pkg (tabulated-list-get-id)))
     (if (gethash pkg mason--installed)
@@ -132,7 +133,7 @@
       (mason-manager--mark pkg 'install "I" 'mason-manager-mark-install))))
 
 (defun mason-manager-mark-delete ()
-  "Mark package at point to be removed."
+  "Mark package to be removed."
   (interactive nil mason-manager-mode)
   (let ((pkg (tabulated-list-get-id)))
     (if (not (gethash pkg mason--installed))
@@ -140,7 +141,7 @@
       (mason-manager--mark pkg 'delete "D" 'mason-manager-mark-delete))))
 
 (defun mason-manager-unmark ()
-  "Unmark PKG at point.  PRINT if it not nil."
+  "Unmark package."
   (interactive nil mason-manager-mode)
   (let ((pkg (tabulated-list-get-id)))
     (remhash pkg mason-manager--marked)
@@ -175,9 +176,21 @@
 (defun mason-manager-show-help ()
   "Show `mason-manager-map'."
   (interactive nil mason-manager-mode)
-  (if (functionp 'helpful-variable)
-      (helpful-variable 'mason-manager-map)
-    (describe-keymap mason-manager-map)))
+  (mason--help-map mason-manager-map))
+
+(defun mason-manager--key-description ()
+  "Return key description."
+  (let* (desc mapper)
+    (setq mapper
+          (lambda (event fn &optional prefix)
+            (let ((key (key-description (vector event))))
+              (if (keymapp fn)
+                  (map-keymap (lambda (e f) (funcall mapper e f key)) fn)
+                (push (cons (concat (when prefix (concat prefix " ")) key)
+                            (nth 0 (s-split-up-to "\\." (documentation fn) 1 t)))
+                      desc)))))
+    (map-keymap mapper mason-manager-map)
+    desc))
 
 
 ;; The Manager
@@ -206,8 +219,7 @@
              (mason-manager--header-text "INS" (if (eq mason-manager--installed   'show) 'mason-manager-installed  'shadow) #'mason-manager-toggle-installed) " "
              (mason-manager--header-text "UNS" (if (eq mason-manager--uninstalled 'show) 'mason-manager-package    'shadow) #'mason-manager-toggle-uninstalled) " "
              (mason-manager--header-text "PND" (if (eq mason-manager--pending     'show) 'mason-manager-pending    'shadow) #'mason-manager-toggle-pending) " "
-             (mason-manager--header-text "DEP" (if (eq mason-manager--deprecated  'show) 'mason-manager-deprecated 'shadow) #'mason-manager-toggle-deprecated) "   "
-             (substitute-command-keys (format "\\`%s' for help" (key-description (where-is-internal 'mason-manager-show-help mason-manager-map t))))))
+             (mason-manager--header-text "DEP" (if (eq mason-manager--deprecated  'show) 'mason-manager-deprecated 'shadow) #'mason-manager-toggle-deprecated)))
            (add-len (length add)))
       (setq header-line-format
             (concat og (make-string (- max-len og-len add-len 2) ?\s) add)))))
@@ -263,7 +275,12 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                     (source-id (gethash "id" source))
                     (purl (mason--parse-purl source-id))
                     (version (gethash "version" purl))
-                    (row (vector name version description "")))
+                    (version (if (not (string-match (rx bol (literal name) (any "/@-") (group (+ any)) eol) version)) version
+                               (match-string 1 version)))
+                    (version (replace-regexp-in-string "^[vV]" "" version))
+                    (version (replace-regexp-in-string (rx bol (or "untagged-" "0.0.0-")) "" version))
+                    (version (if (not (string-match-p "^[0-9a-f]\\{20,40\\}$" version)) version
+                               (concat (substring version 0 9) "…"))))
                (setq name-width (max name-width (length name))
                      version-width (max version-width (length version)))
                (when (and (or (eq 'show t-installed) (not installed))
@@ -272,8 +289,9 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                           (or (eq 'show t-deprecated) (null deprecation))
                           (or (string= f-category "All") (seq-contains-p categories f-category))
                           (or (string= f-language "All") (seq-contains-p languages f-language)))
-                 (puthash name row mason-manager--rows)
-                 (push (list pkg row) entries))))
+                 (let ((row (vector name version description "")))
+                   (puthash name row mason-manager--rows)
+                   (push (list pkg row) entries)))))
            mason--registry)
           (setq tabulated-list-padding 2
                 tabulated-list-format (vector `("Name" ,name-width t)
@@ -293,13 +311,9 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
         (tabulated-list-print)
         (read-only-mode 1)
         (hl-line-mode 1)
-        (use-local-map mason-manager-map)
-        (when (functionp 'evil-local-set-key)
-          (map-keymap
-           (lambda (event fn)
-             (evil-local-set-key 'normal (vector event) fn))
-           mason-manager-map))))
-    (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-same-window)))))
+        (mason--use-local-map mason-manager-map)))
+    (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-same-window)))
+    (mason--echo (substitute-command-keys (format "\\`%s' for help" (key-description (where-is-internal #'mason-manager-show-help mason-manager-map t)))))))
 
 (defun mason-manager--name (pkg)
   "Propertize PKG depending on package status."
@@ -315,14 +329,17 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
 
 (defun mason-manager--update (pkg &optional failed)
   "Update manager entry for PKG and FAILED."
-  (let ((buffer (get-buffer mason-manager--buffer))
+  (let ((manager (get-buffer mason-manager--buffer))
+        (current (current-buffer))
         row)
-    (when buffer
-      (with-current-buffer buffer
+    (when manager
+      (pop-to-buffer manager '((display-buffer-reuse-window display-buffer-same-window)))
+      (with-current-buffer manager
         (setq row (gethash pkg mason-manager--rows))
         (when row
           (aset row 0 (if failed (propertize pkg 'face 'mason-manager-error) (mason-manager--name pkg)))
-          (tabulated-list-print t t))))))
+          (tabulated-list-print t t)))
+      (pop-to-buffer current '((display-buffer-reuse-window display-buffer-same-window))))))
 
 (provide 'mason-manager)
 

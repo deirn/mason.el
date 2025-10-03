@@ -70,6 +70,22 @@ Defaults to 1 week."
      ,@(cl-loop for (k v) on binds by #'cddr
                 collect `(define-key ,map ,(if (stringp k) `(kbd ,k) k) ',v))))
 
+(defun mason--use-local-map (map)
+  "Call `use-local-map' with MAP.
+If Evil exists, also call `evil-local-set-key'."
+  (use-local-map map)
+  (when (functionp 'evil-local-set-key)
+    (map-keymap
+     (lambda (event fn)
+       (evil-local-set-key 'normal (vector event) fn))
+     map)))
+
+(defmacro mason--help-map (map)
+  "Show help for MAP."
+  `(if (functionp 'helpful-variable)
+       (helpful-variable ',map)
+     (describe-keymap ,map)))
+
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."
   (declare (indent defun))

@@ -43,10 +43,13 @@
 (defface mason-info-key '((t (:inherit font-lock-keyword-face))) "Property key." :group 'mason-info)
 (defface mason-info-array '((t (:inherit font-lock-type-face))) "Property key." :group 'mason-info)
 
-(mason--keymap! mason-info-mode-map
-  [remap quit-window]   kill-buffer-and-window
-  [remap revert-buffer] mason-info-update
-  "r"                   mason-info-update)
+(mason--keymap! mason-info-map
+  "?" mason-info-show-help
+  "q" kill-buffer-and-window
+  "i" mason-info-install
+  "d" mason-info-delete
+  "r" mason-info-reload
+  "J" mason-info-json)
 
 (define-derived-mode mason-info-mode special-mode "Mason Info"
   :interactive nil)
@@ -66,8 +69,10 @@ If INTERACTIVE, ask for PACKAGE."
     (mason--ask-package "Mason Info" #'identity #'mason-info--0)))
 
 (defvar-local mason-info--pkg nil)
-(defun mason-info-update ()
-  "Update current `mason-info-mode' buffer."
+(defvar-local mason-info--json nil)
+
+(defun mason-info-reload ()
+  "Reload current `mason-info-mode' buffer."
   (interactive nil mason-info-mode)
   (when mason-info--pkg
     (let* ((line (line-beginning-position))
@@ -79,6 +84,33 @@ If INTERACTIVE, ask for PACKAGE."
                        (end-of-line)
                        (current-column)))
       (forward-char (min char max-char)))))
+
+(defun mason-info-json ()
+  "Toggle show raw JSON spec."
+  (interactive nil mason-info-mode)
+  (setq mason-info--json (not mason-info--json))
+  (mason-info-reload))
+
+(defun mason-info-show-help ()
+  "Show `mason-info-map'."
+  (interactive nil mason-info-mode)
+  (mason--help-map mason-info-map))
+
+(defun mason-info-install ()
+  "Install shown package."
+  (interactive nil mason-info-mode)
+  (if (gethash mason-info--pkg mason--installed)
+      (message "Package already installed")
+    (when (y-or-n-p (format "Install %s? " mason-info--pkg))
+      (mason-install mason-info--pkg nil t (lambda (_) (mason-info-reload))))))
+
+(defun mason-info-delete ()
+  "Delete shown package."
+  (interactive nil mason-info-mode)
+  (if (not (gethash mason-info--pkg mason--installed))
+      (message "Package not installed")
+    (when (y-or-n-p (format "Remove %s? " mason-info--pkg))
+      (mason-uninstall mason-info--pkg t (lambda (_) (mason-info-reload))))))
 
 (defun mason-info--0 (spec)
   "Implementation of `mason-info' SPEC."
@@ -94,43 +126,66 @@ If INTERACTIVE, ask for PACKAGE."
          (deprecation-message (when deprecation (gethash "message" deprecation)))
          (installed (gethash name mason--installed))
          (log (gethash name mason--log))
-         (buf (get-buffer-create (format "*mason info for %s*" name))))
+         (buf (get-buffer-create (format "*mason info for %s*" name)))
+         (json mason-info--json))
     (with-current-buffer buf
       (mason-info-mode)
+      (setq mason-info--json json)
       (read-only-mode -1)
       (erase-buffer)
       (goto-char (point-min))
-      (insert
-       (propertize name 'face 'mason-info-header) ?\n
-       description ?\n
-       ?\n)
-      (when deprecation
+      (cond
+       (json
+        (when installed
+          (insert (propertize "installed spec" 'face 'mason-info-subheader) ?\n)
+          (mason-info--json installed)
+          (insert "\n\n"))
+        (insert (propertize "spec" 'face 'mason-info-subheader) ?\n)
+        (mason-info--json spec))
+       (t
         (insert
-         (propertize (format "Deprecated since %s" deprecation-since) 'face 'mason-info-deprecated) ?\n
-         deprecation-message ?\n
-         ?\n))
-      (insert
-       (mason--info-section "registry  : ") registry ?\n
-       (mason--info-section "homepage  : ") (buttonize homepage #'browse-url homepage) ?\n
-       (mason--info-section "licenses  : ") (mapconcat #'identity licenses ", ") ?\n
-       (mason--info-section "languages : ") (mapconcat #'identity languages ", ") ?\n
-       (mason--info-section "categories: ") (mapconcat #'identity categories ", ") ?\n
-       ?\n)
-      (when installed
-        (insert (propertize "installed recipe" 'face 'mason-info-subheader) ?\n)
-        (mason-info--spec installed)
-        (insert "\n\n"))
-      (insert (propertize "recipe" 'face 'mason-info-subheader) ?\n)
-      (mason-info--spec spec)
-      (when log
-        (insert "\n\n" (propertize "logs" 'face 'mason-info-subheader))
-        (dolist (l (reverse log))
-          (insert ?\n l)))
-      (insert ?\n)
+         (propertize name 'face 'mason-info-header) ?\n
+         description "\n\n"
+         ?\n)
+        (when deprecation
+          (insert
+           (propertize (format "Deprecated since %s" deprecation-since) 'face 'mason-info-deprecated) ?\n
+           deprecation-message ?\n
+           ?\n))
+        (insert
+         (mason--info-section "registry  : ") registry ?\n
+         (mason--info-section "homepage  : ") (buttonize homepage #'browse-url homepage) ?\n
+         (mason--info-section "licenses  : ") (mapconcat #'identity licenses ", ") ?\n
+         (mason--info-section "languages : ") (mapconcat #'identity languages ", ") ?\n
+         (mason--info-section "categories: ") (mapconcat #'identity categories ", ") ?\n
+         ?\n)
+        (when installed
+          (insert (propertize "installed recipe" 'face 'mason-info-subheader) ?\n)
+          (mason-info--spec installed)
+          (insert "\n\n"))
+        (insert (propertize "recipe" 'face 'mason-info-subheader) ?\n)
+        (mason-info--spec spec)
+        (when log
+          (insert "\n\n" (propertize "logs" 'face 'mason-info-subheader))
+          (dolist (l (reverse log))
+            (insert ?\n l)))
+        (insert ?\n)))
       (read-only-mode 1)
       (goto-char (point-min))
       (pop-to-buffer buf)
-      (setq-local mason-info--pkg name))))
+      (setq-local mason-info--pkg name)
+      (mason--use-local-map mason-info-map)
+      (mason--echo (substitute-command-keys (format "\\`%s' for help" (key-description (where-is-internal #'mason-info-show-help mason-info-map t))))))))
+
+(defun mason-info--json (spec)
+  "Insert SPEC as JSON."
+  (insert
+   (with-temp-buffer
+     (delay-mode-hooks (js-json-mode))
+     (json-insert spec)
+     (json-pretty-print (point-min) (point-max))
+     (font-lock-ensure)
+     (buffer-string))))
 
 (defun mason-info--spec (spec)
   "Insert SPEC."
