@@ -70,11 +70,13 @@
   "q"   quit-window
   "RET" mason-manager-visit
   "l"   mason-manager-visit
+  "L"   mason-log
   "u"   mason-manager-unmark
   "U"   mason-manager-unmark-all
   "i"   mason-manager-mark-install
   "d"   mason-manager-mark-delete
   "x"   mason-manager-execute
+  "R"   mason-manager-registry-update
   "f c" mason-manager-filter-category
   "f l" mason-manager-filter-language
   "t i" mason-manager-toggle-installed
@@ -147,6 +149,19 @@
              (mason-uninstall pkg t nil))))))
      mason-manager--marked)
     (mason-manager-unmark-all))))
+
+(defun mason-manager-registry-update ()
+  "Update registry."
+  (interactive nil mason-manager-mode)
+  (let ((buf (get-buffer mason-manager--buffer)))
+    (when buf
+      (with-current-buffer buf
+        (read-only-mode -1)
+        (erase-buffer)
+        (read-only-mode 1))
+      (mason-update-registry
+       (lambda ()
+         (mason-manager--0 :refresh t))))))
 
 (defun mason-manager-filter-category ()
   "Filter by category."
@@ -236,10 +251,11 @@
                 (define-key map [header-line mouse-1] cmd)
                 map)))
 
-(cl-defun mason-manager--0 (&optional &key f-category f-language t-installed t-uninstalled t-pending t-deprecated)
-  "Filter package and show manager ui.
+(cl-defun mason-manager--0 (&optional &key refresh f-category f-language t-installed t-uninstalled t-pending t-deprecated)
+  "Filter package and show (or REFRESH) manager ui.
 Filter by F-CATEGORY F-LANGUAGE
 T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
+  (mason--assert-ensured)
   (setq f-category    (or f-category    mason-manager--category)
         f-language    (or f-language    mason-manager--language)
         t-installed   (or t-installed   mason-manager--installed)
@@ -248,6 +264,7 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
         t-deprecated  (or t-deprecated  mason-manager--deprecated))
   (let ((buf (get-buffer mason-manager--buffer)))
     (when (or (null buf)
+              refresh
               (not (eq f-category    mason-manager--category))
               (not (eq f-language    mason-manager--language))
               (not (eq t-installed   mason-manager--installed))
