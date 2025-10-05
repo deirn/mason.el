@@ -1,4 +1,4 @@
-;;; mason.el --- Mason -*- lexical-binding: t; -*-
+;;; mason.el --- Package managers for LSP, DAP, linters, and more -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025  Dimas Firmansyah
 
