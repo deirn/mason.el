@@ -82,6 +82,72 @@
   "t p" mason-manager-toggle-pending
   "t d" mason-manager-toggle-deprecated)
 
+(defun mason-manager-show-help ()
+  "Toggle help window."
+  (interactive nil mason-manager-mode)
+  (mason--help-map 'mason-manager-map))
+
+(defun mason-manager-visit ()
+  "Visit info for package at point."
+  (interactive nil mason-manager-mode)
+  (mason-info (tabulated-list-get-id)))
+
+(defun mason-manager-unmark ()
+  "Unmark package."
+  (interactive nil mason-manager-mode)
+  (let ((pkg (tabulated-list-get-id)))
+    (remhash pkg mason-manager--marked)
+    (tabulated-list-put-tag "" t)))
+
+(defun mason-manager-unmark-all ()
+  "Unmark all packages."
+  (interactive nil mason-manager-mode)
+  (clrhash mason-manager--marked)
+  (tabulated-list-clear-all-tags))
+
+(defun mason-manager--mark (pkg action tag face)
+  "Mark PKG at point with ACTION and TAG with FACE."
+  (if (gethash pkg mason--pending)
+      (message "Package %s is still being processed" pkg)
+    (puthash pkg action mason-manager--marked)
+    (tabulated-list-put-tag (propertize tag 'face face) t)))
+
+(defun mason-manager-mark-install ()
+  "Mark package to be installed."
+  (interactive nil mason-manager-mode)
+  (let ((pkg (tabulated-list-get-id)))
+    (if (gethash pkg mason--installed)
+        (message "Package %s already installed" pkg)
+      (mason-manager--mark pkg 'install "I" 'mason-manager-mark-install))))
+
+(defun mason-manager-mark-delete ()
+  "Mark package to be removed."
+  (interactive nil mason-manager-mode)
+  (let ((pkg (tabulated-list-get-id)))
+    (if (not (gethash pkg mason--installed))
+        (message "Package %s is not installed" pkg)
+      (mason-manager--mark pkg 'delete "D" 'mason-manager-mark-delete))))
+
+(defun mason-manager-execute ()
+  "Execute install/delete packages."
+  (interactive nil mason-manager-mode)
+  (cond
+   ((hash-table-empty-p mason-manager--marked)
+    (message "No marked packages"))
+   ((y-or-n-p "Install/remove marked packages? ")
+    (maphash
+     (lambda (pkg action)
+       (unless (gethash pkg mason--pending)
+         (cond
+          ((eq action 'install)
+           (unless (gethash pkg mason--installed)
+             (mason-install pkg nil t nil)))
+          ((eq action 'delete)
+           (when (gethash pkg mason--installed)
+             (mason-uninstall pkg t nil))))))
+     mason-manager--marked)
+    (mason-manager-unmark-all))))
+
 (defun mason-manager-filter-category ()
   "Filter by category."
   (interactive nil mason-manager-mode)
@@ -112,72 +178,6 @@
   (interactive nil mason-manager-mode)
   (mason-manager--0 :t-deprecated (if (eq mason-manager--deprecated 'show) 'hide 'show)))
 
-(defun mason-manager-visit ()
-  "Visit info for package at point."
-  (interactive nil mason-manager-mode)
-  (mason-info (tabulated-list-get-id)))
-
-(defun mason-manager--mark (pkg action tag face)
-  "Mark PKG at point with ACTION and TAG with FACE."
-  (if (gethash pkg mason--pending)
-      (message "Package %s is still being processed" pkg)
-    (puthash pkg action mason-manager--marked)
-    (tabulated-list-put-tag (propertize tag 'face face) t)))
-
-(defun mason-manager-mark-install ()
-  "Mark package to be installed."
-  (interactive nil mason-manager-mode)
-  (let ((pkg (tabulated-list-get-id)))
-    (if (gethash pkg mason--installed)
-        (message "Package %s already installed" pkg)
-      (mason-manager--mark pkg 'install "I" 'mason-manager-mark-install))))
-
-(defun mason-manager-mark-delete ()
-  "Mark package to be removed."
-  (interactive nil mason-manager-mode)
-  (let ((pkg (tabulated-list-get-id)))
-    (if (not (gethash pkg mason--installed))
-        (message "Package %s is not installed" pkg)
-      (mason-manager--mark pkg 'delete "D" 'mason-manager-mark-delete))))
-
-(defun mason-manager-unmark ()
-  "Unmark package."
-  (interactive nil mason-manager-mode)
-  (let ((pkg (tabulated-list-get-id)))
-    (remhash pkg mason-manager--marked)
-    (tabulated-list-put-tag "" t)))
-
-(defun mason-manager-unmark-all ()
-  "Unmark all packages."
-  (interactive nil mason-manager-mode)
-  (clrhash mason-manager--marked)
-  (tabulated-list-clear-all-tags))
-
-(defun mason-manager-execute ()
-  "Execute install/delete packages."
-  (interactive nil mason-manager-mode)
-  (cond
-   ((hash-table-empty-p mason-manager--marked)
-    (message "No marked packages"))
-   ((y-or-n-p "Install/remove marked packages? ")
-    (maphash
-     (lambda (pkg action)
-       (unless (gethash pkg mason--pending)
-         (cond
-          ((eq action 'install)
-           (unless (gethash pkg mason--installed)
-             (mason-install pkg nil t nil)))
-          ((eq action 'delete)
-           (when (gethash pkg mason--installed)
-             (mason-uninstall pkg t nil))))))
-     mason-manager--marked)
-    (mason-manager-unmark-all))))
-
-(defun mason-manager-show-help ()
-  "Show `mason-manager-map'."
-  (interactive nil mason-manager-mode)
-  (mason--help-map mason-manager-map))
-
 (defun mason-manager--key-description ()
   "Return key description."
   (let* (desc mapper)
@@ -196,7 +196,9 @@
 ;; The Manager
 
 (define-derived-mode mason-manager-mode tabulated-list-mode "Mason Manager"
-  :interactive nil)
+  :interactive nil
+  (add-hook 'quit-window-hook (lambda () (mason--help-map 'mason-manager-map 'kill)) nil t)
+  (add-hook 'kill-buffer-hook (lambda () (mason--help-map 'mason-manager-map 'kill)) nil t))
 
 ;;;###autoload
 (defun mason-manager ()

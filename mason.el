@@ -58,7 +58,7 @@ Defaults to 1 week."
   :type 'boolean :group 'mason)
 
 
-;; Utility Functions
+;; Keybinds
 
 (defmacro mason--keymap! (map &rest binds)
   "Define a keymap MAP with BINDS."
@@ -80,11 +80,52 @@ If Evil exists, also call `evil-local-set-key'."
        (evil-local-set-key 'normal (vector event) fn))
      map)))
 
-(defmacro mason--help-map (map)
-  "Show help for MAP."
-  `(if (functionp 'helpful-variable)
-       (helpful-variable ',map)
-     (describe-keymap ,map)))
+(defconst mason--help-buffer "*mason-help*")
+(mason--keymap! mason-help-map "q" kill-buffer-and-window)
+(define-derived-mode mason-help-mode tabulated-list-mode "Mason Help" :interactive nil)
+
+(defun mason--help-map (map &optional kill)
+  "Show (or KILL) help for MAP symbol."
+  (let* ((buf-name (format "*mason help for %s*" (symbol-name map)))
+         (map (symbol-value map))
+         (buf (get-buffer buf-name))
+         (key-len 3)
+         mapper entries)
+    (cond
+     ((or buf (and kill buf)) (kill-buffer buf))
+     ((not kill)
+      (setq buf (get-buffer-create buf-name))
+      (with-current-buffer buf
+        (mason-help-mode)
+        (read-only-mode -1)
+        (erase-buffer)
+        (setq mapper
+              (lambda (event function &optional prefix)
+                (let ((key (key-description (vector event))))
+                  (when prefix (setq key (concat prefix " " key)))
+                  (if (keymapp function)
+                      (map-keymap (lambda (e f) (funcall mapper e f key)) function)
+                    (let* ((s (documentation function))
+                           (key (propertize key 'face 'help-key-binding))
+                           (doc (if (not (string-match "\\`\\(.*\\)\\.?$*" s)) s
+                                  (string-trim (match-string 1 s)))))
+                      (setq key-len (max key-len (length key)))
+                      (push (list key (vector key doc)) entries))))))
+        (map-keymap mapper map)
+        (setq tabulated-list-format (vector `("Key" ,key-len nil . (:pad-right 2))
+                                            '("Description" 0 nil))
+              tabulated-list-entries entries)
+        (tabulated-list-init-header)
+        (tabulated-list-print)
+        (read-only-mode 1)
+        (mason--use-local-map mason-help-map)
+        (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-in-side-window)
+                             (post-command-select-window . nil)
+                             (side . right)
+                             (window-width . 0.25))))))))
+
+
+;; Utility Functions
 
 (defmacro mason--run-at-main (&rest body)
   "Run BODY at main thread."

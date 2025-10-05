@@ -43,20 +43,15 @@
 (defface mason-info-key '((t (:inherit font-lock-keyword-face))) "Property key." :group 'mason-info)
 (defface mason-info-array '((t (:inherit font-lock-type-face))) "Property key." :group 'mason-info)
 
-(mason--keymap! mason-info-map
-  "?" mason-info-show-help
-  "q" kill-buffer-and-window
-  "i" mason-info-install
-  "d" mason-info-delete
-  "r" mason-info-reload
-  "J" mason-info-json)
+
+;; The mode
 
 (define-derived-mode mason-info-mode special-mode "Mason Info"
-  :interactive nil)
+  :interactive nil
+  (add-hook 'kill-buffer-hook (lambda () (mason--help-map 'mason-info-map 'kill)) nil t))
 
-(defun mason--info-section (str)
-  "Propertize STR with `mason-info-section'."
-  (propertize str 'face 'mason-info-section))
+(defvar-local mason-info--pkg nil)
+(defvar-local mason-info--json nil)
 
 ;;;###autoload
 (defun mason-info (package &optional interactive)
@@ -68,8 +63,37 @@ If INTERACTIVE, ask for PACKAGE."
       (mason-info--0 (gethash package mason--registry))
     (mason--ask-package "Mason Info" #'identity #'mason-info--0)))
 
-(defvar-local mason-info--pkg nil)
-(defvar-local mason-info--json nil)
+
+;; Keybinds
+
+(mason--keymap! mason-info-map
+  "?" mason-info-show-help
+  "q" kill-buffer-and-window
+  "i" mason-info-install
+  "d" mason-info-delete
+  "r" mason-info-reload
+  "J" mason-info-json)
+
+(defun mason-info-show-help ()
+  "Toggle help window."
+  (interactive nil mason-info-mode)
+  (mason--help-map 'mason-info-map))
+
+(defun mason-info-install ()
+  "Install shown package."
+  (interactive nil mason-info-mode)
+  (if (gethash mason-info--pkg mason--installed)
+      (message "Package already installed")
+    (when (y-or-n-p (format "Install %s? " mason-info--pkg))
+      (mason-install mason-info--pkg nil t (lambda (_) (mason-info-reload))))))
+
+(defun mason-info-delete ()
+  "Delete shown package."
+  (interactive nil mason-info-mode)
+  (if (not (gethash mason-info--pkg mason--installed))
+      (message "Package not installed")
+    (when (y-or-n-p (format "Remove %s? " mason-info--pkg))
+      (mason-uninstall mason-info--pkg t (lambda (_) (mason-info-reload))))))
 
 (defun mason-info-reload ()
   "Reload current `mason-info-mode' buffer."
@@ -91,26 +115,12 @@ If INTERACTIVE, ask for PACKAGE."
   (setq mason-info--json (not mason-info--json))
   (mason-info-reload))
 
-(defun mason-info-show-help ()
-  "Show `mason-info-map'."
-  (interactive nil mason-info-mode)
-  (mason--help-map mason-info-map))
+
+;; Implementation details
 
-(defun mason-info-install ()
-  "Install shown package."
-  (interactive nil mason-info-mode)
-  (if (gethash mason-info--pkg mason--installed)
-      (message "Package already installed")
-    (when (y-or-n-p (format "Install %s? " mason-info--pkg))
-      (mason-install mason-info--pkg nil t (lambda (_) (mason-info-reload))))))
-
-(defun mason-info-delete ()
-  "Delete shown package."
-  (interactive nil mason-info-mode)
-  (if (not (gethash mason-info--pkg mason--installed))
-      (message "Package not installed")
-    (when (y-or-n-p (format "Remove %s? " mason-info--pkg))
-      (mason-uninstall mason-info--pkg t (lambda (_) (mason-info-reload))))))
+(defun mason--info-section (str)
+  "Propertize STR with `mason-info-section'."
+  (propertize str 'face 'mason-info-section))
 
 (defun mason-info--0 (spec)
   "Implementation of `mason-info' SPEC."
