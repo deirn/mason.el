@@ -80,12 +80,16 @@ If INTERACTIVE, ask for PACKAGE."
   (mason--help-map 'mason-info-map))
 
 (defun mason-info-install ()
-  "Install shown package."
+  "Install/update shown package."
   (interactive nil mason-info-mode)
-  (if (gethash mason-info--pkg mason--installed)
-      (message "Package already installed")
-    (when (y-or-n-p (format "Install %s? " mason-info--pkg))
-      (mason-install mason-info--pkg nil t (lambda (_) (mason-info-reload))))))
+  (cond
+   ((gethash mason-info--pkg mason--updatable)
+    (when (y-or-n-p (format "Update %s? " mason-info--pkg))
+      (mason-update mason-info--pkg t (lambda () (mason-info-reload)))))
+   ((gethash mason-info--pkg mason--installed)
+    (message "Package already installed"))
+   ((y-or-n-p (format "Install %s? " mason-info--pkg))
+    (mason-install mason-info--pkg nil t (lambda (_) (mason-info-reload))))))
 
 (defun mason-info-delete ()
   "Delete shown package."
@@ -155,7 +159,7 @@ If INTERACTIVE, ask for PACKAGE."
        (t
         (insert
          (propertize name 'face 'mason-info-header) ?\n
-         description "\n\n"
+         description ?\n
          ?\n)
         (when deprecation
           (insert

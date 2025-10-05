@@ -1045,15 +1045,18 @@ WIN-EXT is the extension to adds when on windows."
 
 (defvar mason--registry 'nan)
 (defvar mason--installed 'nan)
+(defvar mason--updatable 'nan)
 (defvar mason--pending (mason--make-hash))
 
 (defun mason--assert-ensured ()
   "Assert if `mason--registry' is available."
   (when (or (eq mason--registry 'nan)
-            (eq mason--installed 'nan))
+            (eq mason--installed 'nan)
+            (eq mason--updatable 'nan))
     (error "Call `mason-ensure' on your init.el"))
   (when (or (eq mason--registry 'on-process)
-            (eq mason--installed 'on-process))
+            (eq mason--installed 'on-process)
+            (eq mason--updatable 'on-process))
     (error "Mason is not ready yet")))
 
 (defvar mason--package-list nil)
@@ -1103,11 +1106,25 @@ WIN-EXT is the extension to adds when on windows."
     (setq mason--installed (or (mason--read-data installed-index)
                                (mason--make-hash)))))
 
+(defun mason--update-updatable ()
+  "Update `mason--updatable'."
+  (setq mason--updatable (mason--make-hash))
+  (maphash (lambda (k i-spec)
+             (let* ((i-source (gethash "source" i-spec))
+                    (i-id (gethash "id" i-source))
+                    (u-spec (gethash k mason--registry))
+                    (u-source (gethash "source" u-spec))
+                    (u-id (gethash "id" u-source)))
+               (unless (string= i-id u-id)
+                 (puthash k i-spec mason--updatable))))
+           mason--installed))
+
 ;;;###autoload
 (defun mason-update-registry (&optional callback)
   "Refresh the mason registry then call CALLBACK."
   (interactive)
   (setq mason--registry 'on-process
+        mason--updatable 'on-process
         mason--package-list nil
         mason--category-list nil
         mason--language-list nil)
@@ -1146,6 +1163,7 @@ WIN-EXT is the extension to adds when on windows."
            (if (not success) (error "Error downloading registry")
              (setq mason--registry (or (mason--read-data reg-index)
                                        (mason--make-hash)))
+             (mason--update-updatable)
              (mason--success "Mason registry updated")
              (when (functionp callback)
                (funcall callback)))))))))
@@ -1169,6 +1187,7 @@ Call CALLBACK if it succeded."
          (lambda ()
            (mason--update-installed)
            (setq mason--registry (mason--read-data reg-index))
+           (mason--update-updatable)
            (mason--info "Mason ready")
            (when (functionp callback)
              (funcall callback))))))))
@@ -1344,28 +1363,17 @@ If INTERACTIVE, ask for PACKAGE.
 CALLBACK is a function that will be called with one argument,
 indicating the package success to updated."
   (interactive '(nil t nil))
-  (let* ((registry mason--registry)
-         (filtered (mason--make-hash))
-         (install (lambda (pkg)
-                    (lambda (success)
-                      (if success (mason-install pkg callback)
-                        (funcall callback nil))))))
-    (maphash (lambda (k i-spec)
-               (let* ((i-source (gethash "source" i-spec))
-                      (i-id (gethash "id" i-source))
-                      (u-spec (gethash k registry))
-                      (u-source (gethash "source" u-spec))
-                      (u-id (gethash "id" u-source)))
-                 (unless (string= i-id u-id)
-                   (puthash k i-spec filtered))))
-             mason--installed)
+  (let ((install (lambda (pkg)
+                   (lambda (success)
+                     (if success (mason-install pkg interactive callback)
+                       (funcall callback nil))))))
     (cond
-     ((= 0 (hash-table-count filtered))
+     ((= 0 (hash-table-count mason--updatable))
       (mason--info "No update available"))
-     ((and package (not interactive))
-      (mason-uninstall package nil (funcall install package)))
+     ((or package (not interactive))
+      (mason-uninstall package interactive (funcall install package)))
      (t (mason--with-installed
-          (setq mason--registry filtered)
+          (setq mason--registry mason--updatable)
           (mason--ask-package "Mason Update"
                               #'identity
                               (lambda (p)
@@ -1430,8 +1438,9 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
               (mason--error "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
             (when success
               (unless mason-dry-run
-                (if uninstall (remhash name mason--installed)
-                  (puthash name spec mason--installed))
+                (if (not uninstall) (puthash name spec mason--installed)
+                  (remhash name mason--installed)
+                  (remhash name mason--updatable))
                 (with-temp-file (mason--expand-child-file-name "index" packages-dir)
                   (prin1 mason--installed (current-buffer)))))
             (when (fboundp 'mason-manager--update)

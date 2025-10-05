@@ -36,15 +36,17 @@
 
 (defface mason-manager-package '((t (:weight bold))) "Package name." :group 'mason-manager)
 (defface mason-manager-installed '((t (:weight bold :inherit success))) "Installed package name." :group 'mason-manager)
+(defface mason-manager-updatable '((t (:weight bold :inherit font-lock-builtin-face))) "Updatable package name." :group 'mason-manager)
 (defface mason-manager-pending '((t (:weight bold :inherit warning))) "Pending package name." :group 'mason-manager)
 (defface mason-manager-deprecated '((t (:strike-through t))) "Pending package name." :group 'mason-manager)
 (defface mason-manager-error '((t (:weight bold :inherit error))) "Error package name." :group 'mason-manager)
 
 (defface mason-manager-mark-install '((t (:inherit success))) "Install Marker." :group 'mason-manager)
+(defface mason-manager-mark-update '((t (:inherit font-lock-builtin-face))) "Update Marker." :group 'mason-manager)
 (defface mason-manager-mark-delete '((t (:inherit error))) "Delete Marker." :group 'mason-manager)
 
 (defface mason-manager-language '((t (:inherit font-lock-keyword-face))) "Language filter." :group 'mason-manager)
-(defface mason-manager-category '((t (:inherit font-lock-builtin-face))) "Category filter." :group 'mason-manager)
+(defface mason-manager-category '((t (:inherit font-lock-type-face))) "Category filter." :group 'mason-manager)
 
 
 ;; Internal Variables
@@ -56,6 +58,7 @@
 (defvar mason-manager--category "All")
 (defvar mason-manager--language "All")
 (defvar mason-manager--installed 'show)
+(defvar mason-manager--updatable 'show)
 (defvar mason-manager--uninstalled 'show)
 (defvar mason-manager--pending 'show)
 (defvar mason-manager--deprecated 'hide)
@@ -80,7 +83,8 @@
   "f c" mason-manager-filter-category
   "f l" mason-manager-filter-language
   "t i" mason-manager-toggle-installed
-  "t u" mason-manager-toggle-uninstalled
+  "t u" mason-manager-toggle-updatable
+  "t U" mason-manager-toggle-uninstalled
   "t p" mason-manager-toggle-pending
   "t d" mason-manager-toggle-deprecated)
 
@@ -115,15 +119,21 @@
     (tabulated-list-put-tag (propertize tag 'face face) t)))
 
 (defun mason-manager-mark-install ()
-  "Mark package to be installed."
+  "Mark package to install/update."
   (interactive nil mason-manager-mode)
-  (let ((pkg (tabulated-list-get-id)))
-    (if (gethash pkg mason--installed)
-        (message "Package %s already installed" pkg)
-      (mason-manager--mark pkg 'install "I" 'mason-manager-mark-install))))
+  (let* ((pkg (tabulated-list-get-id))
+         (installed (gethash pkg mason--installed))
+         (updatable (gethash pkg mason--updatable)))
+    (cond
+     ((and installed (not updatable))
+      (message "Package %s already installed" pkg))
+     (updatable
+      (mason-manager--mark pkg 'update "U" 'mason-manager-mark-update))
+     (t
+      (mason-manager--mark pkg 'install "I" 'mason-manager-mark-install)))))
 
 (defun mason-manager-mark-delete ()
-  "Mark package to be removed."
+  "Mark package to remove."
   (interactive nil mason-manager-mode)
   (let ((pkg (tabulated-list-get-id)))
     (if (not (gethash pkg mason--installed))
@@ -141,6 +151,9 @@
      (lambda (pkg action)
        (unless (gethash pkg mason--pending)
          (cond
+          ((eq action 'update)
+           (when (gethash pkg mason--updatable)
+             (mason-update pkg t nil)))
           ((eq action 'install)
            (unless (gethash pkg mason--installed)
              (mason-install pkg nil t nil)))
@@ -177,6 +190,11 @@
   "Toggle show installed."
   (interactive nil mason-manager-mode)
   (mason-manager--0 :t-installed (if (eq mason-manager--installed 'show) 'hide 'show)))
+
+(defun mason-manager-toggle-updatable ()
+  "Toggle show updatable."
+  (interactive nil mason-manager-mode)
+  (mason-manager--0 :t-updatable (if (eq mason-manager--updatable 'show) 'hide 'show)))
 
 (defun mason-manager-toggle-uninstalled ()
   "Toggle show uninstalled."
@@ -234,6 +252,7 @@
              (mason-manager--header-text (format "L:%s" mason-manager--language) 'mason-manager-language #'mason-manager-filter-language) " "
              (mason-manager--header-text (format "C:%s" mason-manager--category) 'mason-manager-category #'mason-manager-filter-category) "   "
              (mason-manager--header-text "INS" (if (eq mason-manager--installed   'show) 'mason-manager-installed  'shadow) #'mason-manager-toggle-installed) " "
+             (mason-manager--header-text "UPD" (if (eq mason-manager--updatable   'show) 'mason-manager-updatable  'shadow) #'mason-manager-toggle-updatable) " "
              (mason-manager--header-text "UNS" (if (eq mason-manager--uninstalled 'show) 'mason-manager-package    'shadow) #'mason-manager-toggle-uninstalled) " "
              (mason-manager--header-text "PND" (if (eq mason-manager--pending     'show) 'mason-manager-pending    'shadow) #'mason-manager-toggle-pending) " "
              (mason-manager--header-text "DEP" (if (eq mason-manager--deprecated  'show) 'mason-manager-deprecated 'shadow) #'mason-manager-toggle-deprecated)))
@@ -251,14 +270,15 @@
                 (define-key map [header-line mouse-1] cmd)
                 map)))
 
-(cl-defun mason-manager--0 (&optional &key refresh f-category f-language t-installed t-uninstalled t-pending t-deprecated)
+(cl-defun mason-manager--0 (&optional &key refresh f-category f-language t-installed t-updatable t-uninstalled t-pending t-deprecated)
   "Filter package and show (or REFRESH) manager ui.
 Filter by F-CATEGORY F-LANGUAGE
-T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
+T-INSTALLED T-UPDATABLE T-UNINSTALLED T-PENDING T-DEPRECATED."
   (mason--assert-ensured)
   (setq f-category    (or f-category    mason-manager--category)
         f-language    (or f-language    mason-manager--language)
         t-installed   (or t-installed   mason-manager--installed)
+        t-updatable   (or t-updatable   mason-manager--updatable)
         t-uninstalled (or t-uninstalled mason-manager--uninstalled)
         t-pending     (or t-pending     mason-manager--pending)
         t-deprecated  (or t-deprecated  mason-manager--deprecated))
@@ -268,6 +288,7 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
               (not (eq f-category    mason-manager--category))
               (not (eq f-language    mason-manager--language))
               (not (eq t-installed   mason-manager--installed))
+              (not (eq t-updatable   mason-manager--updatable))
               (not (eq t-uninstalled mason-manager--uninstalled))
               (not (eq t-pending     mason-manager--pending))
               (not (eq t-deprecated  mason-manager--deprecated)))
@@ -289,6 +310,7 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                     (languages (gethash "languages" spec []))
                     (categories (gethash "categories" spec []))
                     (installed (gethash pkg mason--installed))
+                    (updatable (gethash pkg mason--updatable))
                     (pending (gethash pkg mason--pending))
                     (source (gethash "source" spec))
                     (source-id (gethash "id" source))
@@ -302,15 +324,17 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                                (concat (substring version 0 9) "…"))))
                (setq name-width (max name-width (length name))
                      version-width (max version-width (length version)))
-               (when (and (or (eq 'show t-installed) (not installed))
-                          (or (eq 'show t-uninstalled) installed)
-                          (or (eq 'show t-pending) (not pending))
-                          (or (eq 'show t-deprecated) (null deprecation))
-                          (or (string= f-category "All") (seq-contains-p categories f-category))
-                          (or (string= f-language "All") (seq-contains-p languages f-language)))
-                 (let ((row (vector name version description "")))
-                   (puthash name row mason-manager--rows)
-                   (push (list pkg row) entries)))))
+               (let ((show (and (or (eq 'show t-installed) (or (not installed) updatable))
+                                (or (eq 'show t-updatable) (not updatable))
+                                (or (eq 'show t-uninstalled) installed)
+                                (or (eq 'show t-pending) (not pending))
+                                (or (eq 'show t-deprecated) (null deprecation))
+                                (or (string= f-category "All") (seq-contains-p categories f-category))
+                                (or (string= f-language "All") (seq-contains-p languages f-language)))))
+                 (when show
+                   (let ((row (vector name version description "")))
+                     (puthash name row mason-manager--rows)
+                     (push (list pkg row) entries))))))
            mason--registry)
           (setq tabulated-list-padding 2
                 tabulated-list-format (vector `("Name" ,name-width t)
@@ -322,6 +346,7 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
                 mason-manager--category    f-category
                 mason-manager--language    f-language
                 mason-manager--installed   t-installed
+                mason-manager--updatable   t-updatable
                 mason-manager--uninstalled t-uninstalled
                 mason-manager--pending     t-pending
                 mason-manager--deprecated  t-deprecated))
@@ -337,11 +362,13 @@ T-INSTALLED T-UNINSTALLED T-PENDING T-DEPRECATED."
 (defun mason-manager--name (pkg)
   "Propertize PKG depending on package status."
   (let* ((spec (gethash pkg mason--registry))
+         (updatable (gethash pkg mason--updatable))
          (installed (gethash pkg mason--installed))
          (pending (gethash pkg mason--pending))
          (deprecated (gethash "deprecation" spec))
-         (face (cond (installed 'mason-manager-installed)
-                     (pending 'mason-manager-pending)
+         (face (cond (pending 'mason-manager-pending)
+                     (updatable 'mason-manager-updatable)
+                     (installed 'mason-manager-installed)
                      (t 'mason-manager-package)))
          (face (if deprecated `(,face mason-manager-deprecated) face)))
     (propertize pkg 'face face)))
