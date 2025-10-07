@@ -1074,7 +1074,7 @@ WIN-EXT is the extension to adds when on windows."
    mason--category-list
    (setq
     mason--category-list
-    (let ((table (mason--make-hash "All" t)))
+    (let ((table (mason--make-hash "All" t "Other" t)))
       (maphash (lambda (_k v)
                  (when-let* ((cat (gethash "categories" v)))
                    (mapc (lambda (c)
@@ -1091,7 +1091,7 @@ WIN-EXT is the extension to adds when on windows."
    mason--language-list
    (setq
     mason--language-list
-    (let ((table (mason--make-hash "All" t)))
+    (let ((table (mason--make-hash "All" t "None" t)))
       (maphash (lambda (_k v)
                  (when-let* ((cat (gethash "languages" v)))
                    (mapc (lambda (c)
@@ -1299,6 +1299,8 @@ Call CALLBACK with the selected package spec."
                        (cats (gethash "categories" pkg []))
                        (langs (gethash "languages" pkg []))
                        (deprecation (gethash "deprecation" pkg)))
+                  (when (seq-empty-p cats) (setq cats ["Other"]))
+                  (when (seq-empty-p langs) (setq langs ["None"]))
                   (and (funcall mason--ask-package-filter p)
                        (or mason-show-deprecated
                            (null deprecation))
