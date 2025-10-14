@@ -9,7 +9,7 @@ Package registry at [mason-org/mason-registry](https://github.com/mason-org/maso
 - Run `M-x mason-manager RET` to open package manager.
 
 ## Installation
-mason.el is available in [MELPA](https://melpa.org/#/mason), install it in your favorite way
+mason.el is available on [MELPA](https://melpa.org/#/mason), install it in your favorite way
 and call `(mason-ensure)` to setup the environment.
 
 ### Install it with `use-package`
