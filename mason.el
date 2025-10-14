@@ -57,6 +57,14 @@ Defaults to 1 week."
   "Wheter to show deprecated packages."
   :type 'boolean :group 'mason)
 
+(defcustom mason-moving-versions
+  (list (rx bos "nightly" eos)
+        (rx bos "latest" eos))
+  "List of regexp strings for version that will marked as always updatable.
+Will be matched case-insensitively."
+  :type '(repeat regexp)
+  :group 'mason)
+
 
 ;; Keybinds
 
@@ -424,7 +432,7 @@ Returns the modified PATH, added with .bat extension in Windows."
          ;; unix
          (t (insert "#!/usr/bin/env bash\n")
             (dolist (e (nreverse env))
-              (insert "export " (car e) "=" (mason--quote (cdr e) 't) "\n"))
+              (insert "export " (car e) "=" (mason--quote (cdr e) 'always) "\n"))
             (insert c "\n"))))
       (unless windows
         (set-file-modes path #o755)))
@@ -1106,17 +1114,25 @@ WIN-EXT is the extension to adds when on windows."
     (setq mason--installed (or (mason--read-data installed-index)
                                (mason--make-hash)))))
 
+(defun mason--update-updatable1 (spec)
+  "Add SPEC to `mason--updatable' if it is updatable."
+  (let* ((i-name (gethash "name" spec))
+         (i-source (gethash "source" spec))
+         (i-id (gethash "id" i-source))
+         (i-purl (mason--parse-purl i-id))
+         (i-version (gethash "version" i-purl))
+         (u-spec (gethash i-name mason--registry))
+         (u-source (gethash "source" u-spec))
+         (u-id (gethash "id" u-source))
+         (case-fold-search t))
+    (when (or (not (string= i-id u-id))
+              (seq-some (lambda (r) (string-match-p r i-version)) mason-moving-versions))
+      (puthash i-name spec mason--updatable))))
+
 (defun mason--update-updatable ()
   "Update `mason--updatable'."
   (setq mason--updatable (mason--make-hash))
-  (maphash (lambda (k i-spec)
-             (let* ((i-source (gethash "source" i-spec))
-                    (i-id (gethash "id" i-source))
-                    (u-spec (gethash k mason--registry))
-                    (u-source (gethash "source" u-spec))
-                    (u-id (gethash "id" u-source)))
-               (unless (string= i-id u-id)
-                 (puthash k i-spec mason--updatable))))
+  (maphash (lambda (_ spec) (mason--update-updatable1 spec))
            mason--installed))
 
 ;;;###autoload
@@ -1440,9 +1456,13 @@ Args: SPEC FORCE INTERACTIVE UNINSTALL CALLBACK."
               (mason--error "%s of `%s' failed" (if uninstall "Uninstallation" "Installation") name))
             (when success
               (unless mason-dry-run
-                (if (not uninstall) (puthash name spec mason--installed)
+                (cond
+                 (uninstall
                   (remhash name mason--installed)
                   (remhash name mason--updatable))
+                 (t
+                  (puthash name spec mason--installed)
+                  (mason--update-updatable1 spec)))
                 (with-temp-file (mason--expand-child-file-name "index" packages-dir)
                   (prin1 mason--installed (current-buffer)))))
             (when (fboundp 'mason-manager--update)
