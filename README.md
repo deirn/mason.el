@@ -1,4 +1,4 @@
-# mason.el
+# mason.el [![MELPA](https://melpa.org/packages/mason-badge.svg)](https://melpa.org/#/mason)
 
 mason.el is installer for LSP servers, DAP servers, linters and formatters,
 inspired by [mason.nvim](https://github.com/mason-org/mason.nvim).
@@ -9,12 +9,18 @@ Package registry at [mason-org/mason-registry](https://github.com/mason-org/maso
 - Run `M-x mason-manager RET` to open package manager.
 
 ## Installation
-### `use-package` with [Elpaca](https://github.com/progfolio/elpaca)
+mason.el is available in [MELPA](https://melpa.org/#/mason), install it in your favorite way
+and call `(mason-ensure)` to setup the environment.
+
+### Install it with `use-package`
 ``` emacs-lisp
 (use-package mason
-  :ensure (:host github :repo "deirn/mason.el")
+  :ensure t
   :config
-  (mason-ensure))
+  (mason-ensure)
+  ;; or
+  :hook
+  (after-init-hook . mason-ensure))
 ```
 
 ## Screenshots
