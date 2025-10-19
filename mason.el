@@ -241,11 +241,21 @@ See `mason--process' for CMD ENV CWD FILTER THEN."
        (mason--process ,cmd :env ,env :cwd ,cwd :filter ,filter :then ,then))))
 
 (defconst mason--cmd-load-path (file-name-directory (or load-file-name buffer-file-name)))
+
+;; copied from dirvish
+(defconst mason--emacs-bin
+  (cond
+   ((and invocation-directory invocation-name)
+    (expand-file-name (concat (file-name-as-directory invocation-directory) invocation-name)))
+   ((eq system-type 'darwin)
+    "/Applications/Emacs.app/Contents/MacOS/Emacs")
+   (t "emacs")))
+
 (defun mason--emacs-cmd (&rest body)
   "Run BODY in a separate Emacs process.
 To be used with `mason--process' and `mason--process-sync'."
   (declare (indent defun))
-  (list "emacs" "-Q" "--batch"
+  (list mason--emacs-bin "-Q" "--batch"
         "-L" mason--cmd-load-path
         "--eval"
         (prin1-to-string
