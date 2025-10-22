@@ -286,7 +286,7 @@ See `mason--process-sync' for CMD and ARGS."
                 (out-file (replace-regexp-in-string ,regexp ,replace (file-name-nondirectory file)))
                 (out-file (mason--expand-child-file-name out-file dest)))
            (ignore out-file)
-           (mason--process-sync '(,cmd-proc ,@cmd-args) ,@args)))
+           (mason--process-sync `(,,cmd-proc ,@,cmd-args) ,@args)))
        (add-to-list 'mason--extractors '(,regexp ,replace ,fn)))))
 
 (defmacro mason--extract-stdio! (name ext replace cmd-proc cmd-args)
