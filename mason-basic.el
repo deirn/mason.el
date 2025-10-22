@@ -268,10 +268,11 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
 
 ;; Archive Extractors
 
+(defconst mason--extract-requirements nil)
 (defvar mason--extractors nil)
 
-(defmacro mason--extract! (name ext replace cmd &rest args)
-  "Define an archive extractor NAME for EXT with CMD.
+(defmacro mason--extract! (name ext replace cmd-proc cmd-args &rest args)
+  "Define an archive extractor NAME for EXT with CMD-PROC and CMD-ARGS.
 REPLACE occurence of EXT with the value if it not nil.
 See `mason--process-sync' for CMD and ARGS."
   (declare (indent defun))
@@ -279,19 +280,20 @@ See `mason--process-sync' for CMD and ARGS."
          (fn (intern fn-name))
          (regexp (macroexpand `(rx "." ,ext eos))))
     `(progn
+       (push (cons ',name ,cmd-proc) mason--extract-requirements)
        (defun ,fn (file dest)
          (let* ((default-directory dest)
                 (out-file (replace-regexp-in-string ,regexp ,replace (file-name-nondirectory file)))
                 (out-file (mason--expand-child-file-name out-file dest)))
            (ignore out-file)
-           (mason--process-sync ,cmd ,@args)))
+           (mason--process-sync '(,cmd-proc ,@cmd-args) ,@args)))
        (add-to-list 'mason--extractors '(,regexp ,replace ,fn)))))
 
-(defmacro mason--extract-stdio! (name ext replace cmd)
-  "Extractor for CMD that outputs to stdout.
-See `mason--extract!' for NAME, EXT, REPLACE."
+(defmacro mason--extract-stdio! (name ext replace cmd-proc cmd-args)
+  "Extractor for CMD-PROC that outputs to stdout.
+See `mason--extract!' for NAME, EXT, REPLACE, CMD-ARGS."
   (declare (indent defun))
-  `(mason--extract! ,name ,ext ,replace ,cmd :out `(:file ,out-file)))
+  `(mason--extract! ,name ,ext ,replace ,cmd-proc ,cmd-args :out `(:file ,out-file)))
 
 (defun mason--try-extract (file dest)
   "Extract FILE to dir DEST, if it can be extracted.
@@ -330,19 +332,19 @@ otherwise, return the original file name."
     (if rule (mason--archive-name (replace-regexp-in-string regexp replace archive) t)
       (when return-orig archive))))
 
-(mason--extract! 7z  "7z"              "" `("7z" "x" "-aoa" ,(concat "-o" dest) ,file))
-(mason--extract! tar "tar"             "" `("tar" "-xpf" ,file "-C" ,dest))
-(mason--extract! zip (or "zip" "vsix") "" `("unzip" "-o" "-d" ,dest ,file))
-(mason--extract! xar "xar"             "" `("xar" "-x" "-f" ,file "-C" ,dest))
+(mason--extract! 7z  "7z"              "" "7z"    `("x" "-aoa" ,(concat "-o" dest) ,file))
+(mason--extract! tar "tar"             "" "tar"   `("-xpf" ,file "-C" ,dest))
+(mason--extract! zip (or "zip" "vsix") "" "unzip" `("-o" "-d" ,dest ,file))
+(mason--extract! xar "xar"             "" "xar"   `("-x" "-f" ,file "-C" ,dest))
 
-(mason--extract-stdio! bzip2 "bz2"         ""     `("bunzip2"    "-c"  ,file))
-(mason--extract-stdio! dz    "dz"          ""     `("dictunzip"  "-c"  ,file))
-(mason--extract-stdio! gzip  (or "gz" "z") ""     `("gzip"       "-dc" ,file))
-(mason--extract-stdio! lzip  "lz"          ""     `("lzip"       "-dc" ,file))
-(mason--extract-stdio! xz    "xz"          ""     `("unxz"       "-c"  ,file))
-(mason--extract-stdio! Z     "Z"           ""     `("uncompress" "-c"  ,file))
-(mason--extract-stdio! zst   "zst"         ""     `("unzstd"     "-c"  ,file))
-(mason--extract-stdio! tzst  "tzst"        ".tar" `("unzstd"     "-c"  ,file))
+(mason--extract-stdio! bzip2 "bz2"         ""     "bunzip2"    `("-c"  ,file))
+(mason--extract-stdio! dz    "dz"          ""     "dictunzip"  `("-c"  ,file))
+(mason--extract-stdio! gzip  (or "gz" "z") ""     "gzip"       `("-dc" ,file))
+(mason--extract-stdio! lzip  "lz"          ""     "lzip"       `("-dc" ,file))
+(mason--extract-stdio! xz    "xz"          ""     "unxz"       `("-c"  ,file))
+(mason--extract-stdio! Z     "Z"           ""     "uncompress" `("-c"  ,file))
+(mason--extract-stdio! zst   "zst"         ""     "unzstd"     `("-c"  ,file))
+(mason--extract-stdio! tzst  "tzst"        ".tar" "unzstd"     `("-c"  ,file))
 
 (defun mason--download-maybe-extract (url dest)
   "Download file from URL.

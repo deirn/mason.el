@@ -8,6 +8,12 @@ Package registry at [mason-org/mason-registry](https://github.com/mason-org/maso
 - Run `M-x mason-install RET` to install packages.
 - Run `M-x mason-manager RET` to open package manager.
 
+## Requirements
+mason.el will call external programs such as `cargo` and `npm` to install the packages,
+or `tar` and `gzip` to extract downloaded archives.
+
+Call `(mason-doctor)` to see the requirements of each package type.
+
 ## Installation
 mason.el is available on [MELPA](https://melpa.org/#/mason), install it in your favorite way
 and call `(mason-ensure)` to setup the environment.
@@ -22,6 +28,18 @@ and call `(mason-ensure)` to setup the environment.
   :hook
   (after-init-hook . mason-ensure))
 ```
+
+## Snippets
+### Programmatically installing packages
+mason.el can be used to install packages programmatically:
+``` emacs-lisp
+(mason-ensure
+ (lambda ()
+   (ignore-errors (mason-install "basedpyright"))
+   (ignore-errors (mason-install "jdtls"))
+   (ignore-errors (mason-install "clangd"))))
+```
+This will install the missing packages.
 
 ## Screenshots
 |                                             |                                           |

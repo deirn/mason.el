@@ -629,13 +629,19 @@ See `mason--proc-to-sexp' for TRANSFORMER."
 
 ;; Source Resolvers
 
+(defconst mason--source-requirements nil)
+
 (cl-defmacro mason--source! (type
-                             (&key (namespace  'none)
+                             (&key (req         nil)
+                                   (namespace  'none)
                                    (version    'must)
                                    (qualifiers 'none)
                                    (subpath    'none))
                              &rest body)
   "Define a mason source resolver for TYPE.
+
+:REQ key declares external program requirements for
+     the source.
 
 These keys declare support for PURL member:
 :NAMESPACE  none, optional or must, defaults to none
@@ -706,29 +712,31 @@ Inside BODY, one can reference:
                (error "`%s' must only have qualifiers of key %S" id-raw m-qualifiers)))
            (t (error "`%s': :qualifiers must be none or list" fn-name)))))
     ;; resulting function
-    `(defun ,(intern fn-name) (name prefix id source spec next)
-       (let* ((m-qualifiers ',qualifiers)
-              (id-raw        (gethash "raw" id))
-              (id-scheme     (gethash "scheme" id))
-              (id-type       (gethash "type" id))
-              (id-namespace  (gethash "namespace" id))
-              (id-name       (gethash "name" id))
-              (id-version    (gethash "version" id))
-              (id-qualifiers (gethash "qualifiers" id))
-              (id-subpath    (gethash "subpath" id)))
-         (ignore name id source spec m-qualifiers
-                 id-raw id-scheme id-type id-namespace id-name id-version id-qualifiers id-subpath)
-         (remhash "version_overrides" source)
-         (let ((platforms (gethash "supported_platforms" source)))
-           (when platforms
-             (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
-               (error "Package `%s' only supports platforms `%s'" name (json-serialize platforms)))))
-         ,p-namespace
-         ,p-version
-         ,p-subpath
-         ,p-qualifiers
-         ,@body
-         t))))
+    `(progn
+       (push (cons ',type ',req) mason--source-requirements)
+       (defun ,(intern fn-name) (name prefix id source spec next)
+         (let* ((m-qualifiers ',qualifiers)
+                (id-raw        (gethash "raw" id))
+                (id-scheme     (gethash "scheme" id))
+                (id-type       (gethash "type" id))
+                (id-namespace  (gethash "namespace" id))
+                (id-name       (gethash "name" id))
+                (id-version    (gethash "version" id))
+                (id-qualifiers (gethash "qualifiers" id))
+                (id-subpath    (gethash "subpath" id)))
+           (ignore name id source spec m-qualifiers
+                   id-raw id-scheme id-type id-namespace id-name id-version id-qualifiers id-subpath)
+           (remhash "version_overrides" source)
+           (let ((platforms (gethash "supported_platforms" source)))
+             (when platforms
+               (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
+                 (error "Package `%s' only supports platforms `%s'" name (json-serialize platforms)))))
+           ,p-namespace
+           ,p-version
+           ,p-subpath
+           ,p-qualifiers
+           ,@body
+           t)))))
 
 (defun mason--source-target (source key)
   "Get value that with matching target from SOURCE[KEY].
@@ -775,7 +783,8 @@ Expand BUILD[env] with ID."
   "No-op source resolver, simply calls NEXT."
   (funcall next t))
 
-(mason--source! cargo (:qualifiers ("repository_url" "rev" "locked" "features"))
+(mason--source! cargo (:req "cargo"
+                       :qualifiers ("repository_url" "rev" "locked" "features"))
   (let (repo-url rev (locked t) features)
     (when id-qualifiers
       (setq repo-url (gethash "repository_url" id-qualifiers)
@@ -794,7 +803,8 @@ Expand BUILD[env] with ID."
                       ,@(when features `("--features" ,features)))
       :then next)))
 
-(mason--source! pypi (:qualifiers ("extra"))
+(mason--source! pypi (:req "python"
+                      :qualifiers ("extra"))
   (let (extra)
     (when id-qualifiers
       (setq extra (gethash "extra" id-qualifiers)))
@@ -808,7 +818,8 @@ Expand BUILD[env] with ID."
         :cwd prefix
         :then next))))
 
-(mason--source! npm (:namespace optional)
+(mason--source! npm (:req "npm"
+                     :namespace optional)
   (mason--process `("npm" "install" "-g"
                     "--prefix" ,prefix
                     ,(concat
@@ -817,7 +828,8 @@ Expand BUILD[env] with ID."
                     ,@(seq-into (gethash "extra_packages" source) 'list))
     :then next))
 
-(mason--source! golang (:namespace must
+(mason--source! golang (:req "go"
+                        :namespace must
                         :subpath optional)
   (mason--process `("go" "install" ,(concat id-namespace "/" id-name
                                             (when id-subpath (concat "/" id-subpath))
@@ -825,13 +837,14 @@ Expand BUILD[env] with ID."
     :env `(("GOBIN" . ,prefix))
     :then next))
 
-(mason--source! nuget ()
+(mason--source! nuget (:req "dotnet")
   (mason--process `("dotnet" "tool" "install" ,id-name
                     "--version" ,id-version
                     "--tool-path" ,prefix)
     :then next))
 
-(mason--source! luarocks (:qualifiers ("repository_url" "dev"))
+(mason--source! luarocks (:req "luarocks"
+                          :qualifiers ("repository_url" "dev"))
   (let (server dev)
     (when id-qualifiers
       (setq server (gethash "repository_url" id-qualifiers)
@@ -843,7 +856,7 @@ Expand BUILD[env] with ID."
                       ,id-name ,id-version)
       :then next)))
 
-(mason--source! gem ()
+(mason--source! gem (:req "gem")
   (mason--process `("gem" "install"
                     "--no-user-install"
                     "--no-format-executable"
@@ -855,7 +868,7 @@ Expand BUILD[env] with ID."
     :env `(("GEM_HOME" . ,prefix))
     :then next))
 
-(mason--source! opam ()
+(mason--source! opam (:req "opam")
   (mason--process `("opam" "switch" "create" ,prefix
                     "--yes" "--assume-depexts"
                     "--packages" ,(concat id-name "." id-version))
@@ -877,7 +890,8 @@ Expand BUILD[env] with ID."
           ,prefix))
       :then next)))
 
-(mason--source! composer (:namespace must)
+(mason--source! composer (:req "composer"
+                          :namespace must)
   (unless mason-dry-run (make-directory prefix t))
   (mason--process `("composer" "init"
                     "--stability" "stable"
@@ -898,7 +912,8 @@ Expand BUILD[env] with ID."
           "\\)?"
           "$"))
 
-(mason--source! github (:namespace must)
+(mason--source! github (:req "git"
+                        :namespace must)
   (let ((has-asset (gethash "asset" source))
         (has-build (gethash "build" source)))
     (cond
@@ -973,8 +988,11 @@ Expand BUILD[env] with ID."
 
 ;; Binary Resolvers
 
-(defmacro mason--bin! (type &rest body)
+(defconst mason--bin-requirements nil)
+
+(defmacro mason--bin! (type req &rest body)
   "Define a mason binary resolver for TYPE.
+REQ is external program requirements.
 BODY is `progn' body.
 
 Inside BODY, one can reference:
@@ -983,9 +1001,11 @@ Inside BODY, one can reference:
 - TARGET is the target binary, depends on the TYPE.
 - UNINSTALL is wheter to install or uninstall the binary."
   (declare (indent defun))
-  `(defun ,(intern (concat "mason--bin-" (symbol-name type))) (prefix path target uninstall)
-     (ignore prefix path target)
-     ,@body))
+  `(progn
+     (push (cons ',type ',req) mason--bin-requirements)
+     (defun ,(intern (concat "mason--bin-" (symbol-name type))) (prefix path target uninstall)
+       (ignore prefix path target)
+       ,@body)))
 
 (defmacro mason--bin-link! (path target)
   "Call `mason--link' with PATH and TARGET."
@@ -997,7 +1017,7 @@ Inside BODY, one can reference:
 (defmacro mason--bin-executable! (name dir &optional win-ext)
   "Binary resolver NAME that link to binary path inside DIR.
 WIN-EXT is the extension to adds when on windows."
-  `(mason--bin! ,name
+  `(mason--bin! ,name nil
      ,@(when win-ext
          `((when (mason--is-windows t)
              (setq path (concat path ,win-ext)
@@ -1013,10 +1033,10 @@ WIN-EXT is the extension to adds when on windows."
 (defmacro mason--bin-exec! (name &rest cmd)
   "Binary resolver NAME that creates wrapper for DIR/CMD with ENV."
   (unless (listp cmd) (setq cmd (list cmd)))
-  `(mason--bin! ,name
+  `(mason--bin! ,name ,(nth 0 cmd)
      (mason--bin-wrapper! (list (mason--shell-exec) ,@cmd (mason--expand-child-file-name target prefix) (mason--shell-args)))))
 
-(mason--bin! path (mason--bin-link! path (mason--expand-child-file-name target prefix)))
+(mason--bin! path nil (mason--bin-link! path (mason--expand-child-file-name target prefix)))
 
 (mason--bin-exec! exec)
 (mason--bin-exec! dotnet   "dotnet")
@@ -1034,14 +1054,14 @@ WIN-EXT is the extension to adds when on windows."
 (mason--bin-executable! opam     "_opam/bin"  ".exe")
 (mason--bin-executable! composer "vendor/bin" ".bat")
 
-(mason--bin! pypi
+(mason--bin! pypi nil
   (let (extension (bin-dir "bin/"))
     (when (mason--is-windows 'cygwin) (setq extension ".exe"))
     (when (mason--is-windows) (setq bin-dir "Scripts/"))
     (mason--bin-link! (concat path extension)
                       (mason--expand-child-file-name (concat bin-dir target extension) prefix))))
 
-(mason--bin! pyvenv
+(mason--bin! pyvenv nil
   (let ((python "bin/python"))
     (when (mason--is-cygwin) (setq python "bin/python.exe"))
     (when (mason--is-windows) (setq python "Scripts/python.exe"))
@@ -1050,13 +1070,50 @@ WIN-EXT is the extension to adds when on windows."
                            "-m" ,target
                            ,(mason--shell-args)))))
 
-(mason--bin! gem
+(mason--bin! gem nil
   (when (mason--is-windows t)
     (setq target (concat target ".bat")))
   (mason--bin-wrapper! `(,(mason--shell-exec)
                          ,(mason--expand-child-file-name (concat "bin/" target) prefix)
                          ,(mason--shell-args))
                        :env `(("GEM_PATH" . ,(concat prefix path-separator (mason--shell-env "GEM_PATH"))))))
+
+
+;; Doctor
+
+(define-derived-mode mason-doctor-mode special-mode "Mason Doctor" :interactive nil)
+
+;;;###autoload
+(defun mason-doctor ()
+  "Validate external program requirements."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*mason-doctor*")
+    (read-only-mode -1)
+    (erase-buffer)
+    (insert "List of external program that might be needed.\n"
+            "Note that there might be additional program needed for a generic package.")
+    (insert "\n\nSource Resolvers: \n")
+    (mason--doctor mason--source-requirements)
+    (insert "\nBinary Resolvers: \n")
+    (mason--doctor mason--bin-requirements)
+    (insert "\nExtractors: \n")
+    (mason--doctor mason--extract-requirements)
+    (read-only-mode 1)
+    (mason-doctor-mode)
+    (pop-to-buffer (current-buffer))))
+
+(defun mason--doctor (alist)
+  "Vaildate requirements for TYPE and ALIST."
+  (dolist (e alist)
+    (let ((symbol (car e))
+          (progs (cdr e)))
+      (unless (listp progs)
+        (setq progs (list progs)))
+      (when progs
+        (insert "- " (symbol-name symbol) ": ")
+        (dolist (prog progs)
+          (insert (propertize (concat prog " ") 'face (if (executable-find prog) 'success 'error))))
+        (insert ?\n)))))
 
 
 ;; The Installer
