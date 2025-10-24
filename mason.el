@@ -43,7 +43,7 @@
   :type 'directory :group 'mason)
 
 (defcustom mason-registry-refresh-time (* 60 60 24 7)
-  "How long in seconds the before trying to refresh the registry.
+  "How long in seconds before trying to refresh the registry.
 Defaults to 1 week."
   :type 'integer :group 'mason)
 
@@ -54,13 +54,13 @@ Defaults to 1 week."
   :group 'mason)
 
 (defcustom mason-show-deprecated nil
-  "Wheter to show deprecated packages."
+  "Whether to show deprecated packages."
   :type 'boolean :group 'mason)
 
 (defcustom mason-moving-versions
   (list (rx bos "nightly" eos)
         (rx bos "latest" eos))
-  "List of regexp strings for version that will marked as always updatable.
+  "List of regexp strings for versions that will be marked as always updatable.
 Will be matched case-insensitively."
   :type '(repeat regexp)
   :group 'mason)
@@ -279,7 +279,7 @@ To be used with `mason--process' and `mason--process-sync'."
           (funcall then))))))
 
 (defun mason--target-match (str)
-  "Return non nil when target STR match current target."
+  "Return non nil when target STR matches current target."
   (let* ((os (nth 0 mason--target))
          (arch (nth 1 mason--target))
          (libc (nth 2 mason--target))
@@ -416,7 +416,7 @@ https://github.com/package-url/purl-spec"
 Delete existing file if OVERWRITE is not nil.
 
 CONTENT can be either string or list of string, in which it
-will get concated with `mason--quote'.
+will get concatenated with `mason--quote'.
 
 ENV is alist of additional environment variable to set.
 Returns the modified PATH, added with .bat extension in Windows."
@@ -455,11 +455,11 @@ Returns the modified PATH, added with .bat extension in Windows."
     (concat "$" env)))
 
 (defun mason--shell-exec ()
-  "Return exec on unix."
+  "Return exec on Unix."
   (if (mason--is-windows) "" "exec"))
 
 (defun mason--shell-args ()
-  "Arguments expansion for `mason--make-shell', $@ in unix."
+  "Arguments expansion for `mason--make-shell', $@ in Unix."
   (if (mason--is-windows) "!args!" "\"$@\""))
 
 (defun mason--shell-cmd (path)
@@ -548,7 +548,7 @@ Delete existing file if OVERWRITE is not nil."
 
 (defun mason--proc-to-sexp (exp &optional transformer)
   "Convert procedural EXP to s-expression.
-TRANSFORMER accept symbol type and string to transform to sexp."
+TRANSFORMER accepts symbol type and string to transform to sexp."
   (setq exp (string-trim exp))
   (cond
    ;; function call
@@ -739,7 +739,7 @@ Inside BODY, one can reference:
            t)))))
 
 (defun mason--source-target (source key)
-  "Get value that with matching target from SOURCE[KEY].
+  "Get value with matching target from SOURCE[KEY].
 See `mason--target-match'"
   (let ((val (gethash key source)))
     (unless val (error "Missing `%s'" key))
@@ -999,7 +999,7 @@ Inside BODY, one can reference:
 - PREFIX is where the package should've been installed.
 - PATH is where the wrapper/link should be placed.
 - TARGET is the target binary, depends on the TYPE.
-- UNINSTALL is wheter to install or uninstall the binary."
+- UNINSTALL is whether to install or uninstall the binary."
   (declare (indent defun))
   `(progn
      (push (cons ',type ',req) mason--bin-requirements)
@@ -1015,8 +1015,8 @@ Inside BODY, one can reference:
        (set-file-modes path (file-modes-symbolic-to-number "+x" (file-modes path))))))
 
 (defmacro mason--bin-executable! (name dir &optional win-ext)
-  "Binary resolver NAME that link to binary path inside DIR.
-WIN-EXT is the extension to adds when on windows."
+  "Binary resolver NAME that links to binary path inside DIR.
+WIN-EXT is the extension to add when on windows."
   `(mason--bin! ,name nil
      ,@(when win-ext
          `((when (mason--is-windows t)
@@ -1103,7 +1103,7 @@ WIN-EXT is the extension to adds when on windows."
     (pop-to-buffer (current-buffer))))
 
 (defun mason--doctor (alist)
-  "Vaildate requirements for TYPE and ALIST."
+  "Validate requirements for TYPE and ALIST."
   (dolist (e alist)
     (let ((symbol (car e))
           (progs (cdr e)))
@@ -1254,7 +1254,7 @@ WIN-EXT is the extension to adds when on windows."
 ;;;###autoload
 (defun mason-ensure (&optional callback)
   "Ensure mason is setup.
-Call CALLBACK if it succeded."
+Call CALLBACK if it succeeded."
   (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
          (reg-index (mason--expand-child-file-name "registry/index" mason-dir))
          (reg-time (file-attribute-modification-time (file-attributes reg-index)))
@@ -1290,7 +1290,7 @@ Call CALLBACK if it succeded."
   "M-m" mason-filter-map)
 
 (defmacro mason--filter! (key name &rest body)
-  "Create a filter function NAME of BODY, assign it to KEY."
+  "Create a filter function NAME for BODY, assign it to KEY."
   (declare (indent 2))
   `(progn
      (defun ,name (fake)
@@ -1446,7 +1446,7 @@ indicating the package success to uninstall."
 If INTERACTIVE, ask for PACKAGE.
 
 CALLBACK is a function that will be called with one argument,
-indicating the package success to updated."
+indicating the package success to update."
   (interactive '(nil t nil))
   (let ((install (lambda (pkg)
                    (lambda (success)

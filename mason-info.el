@@ -41,7 +41,7 @@
 (defface mason-info-deprecated '((t (:inherit error))) "Deprecated." :group 'mason-info)
 
 (defface mason-info-key '((t (:inherit font-lock-keyword-face))) "Property key." :group 'mason-info)
-(defface mason-info-array '((t (:inherit font-lock-type-face))) "Property key." :group 'mason-info)
+(defface mason-info-array '((t (:inherit font-lock-type-face))) "Property array." :group 'mason-info)
 
 
 ;; The mode

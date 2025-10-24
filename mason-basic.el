@@ -52,11 +52,11 @@
 
 ;; Logging
 
-(defface mason-log-time    '((t . (:inherit shadow)))  "Log timestamp."   :group 'mason)
-(defface mason-log-info    '((t))                      "Log level info."  :group 'mason)
-(defface mason-log-warn    '((t . (:inherit warning))) "Log level warn."  :group 'mason)
-(defface mason-log-error   '((t . (:inherit error)))   "Log level error." :group 'mason)
-(defface mason-log-success '((t . (:inherit success))) "Log level error." :group 'mason)
+(defface mason-log-time    '((t . (:inherit shadow)))  "Log timestamp."     :group 'mason)
+(defface mason-log-info    '((t))                      "Log level info."    :group 'mason)
+(defface mason-log-warn    '((t . (:inherit warning))) "Log level warn."    :group 'mason)
+(defface mason-log-error   '((t . (:inherit error)))   "Log level error."   :group 'mason)
+(defface mason-log-success '((t . (:inherit success))) "Log level success." :group 'mason)
 
 (defconst mason-buffer " *mason*")
 (define-derived-mode mason-log-mode special-mode "Mason Log"
@@ -126,7 +126,7 @@
   (mason--log 'mason-log-error "ERROR: " format args))
 
 (defun mason--success (format &rest args)
-  "Log FORMAT ARGS with info level."
+  "Log FORMAT ARGS with success level."
   (mason--log 'mason-log-success "" format args))
 
 
@@ -273,7 +273,7 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
 
 (defmacro mason--extract! (name ext replace cmd-proc cmd-args &rest args)
   "Define an archive extractor NAME for EXT with CMD-PROC and CMD-ARGS.
-REPLACE occurence of EXT with the value if it not nil.
+REPLACE occurrence of EXT with the value if it not nil.
 See `mason--process-sync' for CMD and ARGS."
   (declare (indent defun))
   (let* ((fn-name (concat "mason--extract-" (symbol-name name)))
@@ -348,7 +348,7 @@ otherwise, return the original file name."
 
 (defun mason--download-maybe-extract (url dest)
   "Download file from URL.
-If it a supported archive, extract into directory DEST.
+If it is a supported archive, extract into directory DEST.
 If not, simply save it as DEST, or inside DEST if it is a directory.
 See `mason--extract-strategies'."
   (let* ((filename (file-name-nondirectory (url-filename (url-generic-parse-url url))))

@@ -30,7 +30,7 @@
 (require 'mason-info)
 
 (defgroup mason-manager nil
-  "Package manager view form mason.el."
+  "Package manager view for mason.el."
   :prefix "mason-manager-"
   :group 'mason)
 
@@ -38,7 +38,7 @@
 (defface mason-manager-installed '((t (:weight bold :inherit success))) "Installed package name." :group 'mason-manager)
 (defface mason-manager-updatable '((t (:weight bold :inherit font-lock-builtin-face))) "Updatable package name." :group 'mason-manager)
 (defface mason-manager-pending '((t (:weight bold :inherit warning))) "Pending package name." :group 'mason-manager)
-(defface mason-manager-deprecated '((t (:strike-through t))) "Pending package name." :group 'mason-manager)
+(defface mason-manager-deprecated '((t (:strike-through t))) "Deprecated package name." :group 'mason-manager)
 (defface mason-manager-error '((t (:weight bold :inherit error))) "Error package name." :group 'mason-manager)
 
 (defface mason-manager-mark-install '((t (:inherit success))) "Install Marker." :group 'mason-manager)
@@ -241,7 +241,7 @@
   (mason-manager--0))
 
 (defun mason-manager--header-line-advice ()
-  "Header line for `mason-manager-mode' OG."
+  "Header line for `mason-manager-mode'."
   (when mason-manager--header-line-advice
     (let* ((og (format-mode-line header-line-format))
            (max-len (round (/ (string-pixel-width og) (frame-char-width))))
