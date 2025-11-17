@@ -44,7 +44,8 @@
 
 (defcustom mason-registry-refresh-time (* 60 60 24 7)
   "How long in seconds before trying to refresh the registry.
-Defaults to 1 week."
+Defaults to 1 week.  Set to 0 or less to disable automatic refresh.
+This value is checked on every `mason-ensure' call."
   :type 'integer :group 'mason)
 
 (defcustom mason-registries
@@ -1264,7 +1265,7 @@ Call CALLBACK if it succeeded."
     (if (null reg-time)
         (mason-update-registry callback)
       (setq reg-age (float-time (time-subtract (current-time) reg-time)))
-      (if (> reg-age mason-registry-refresh-time)
+      (if (and (> mason-registry-refresh-time 0) (> reg-age mason-registry-refresh-time))
           (mason-update-registry callback)
         (mason--update-target
          (lambda ()
