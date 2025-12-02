@@ -906,10 +906,10 @@ Expand BUILD[env] with ID."
 
 (defconst mason--github-file-regexp
   (concat "^"
-          "\\([A-ZA-Z0-9_.-]+\\)"  ; 1. file path
+          "\\([A-Za-z0-9_.-]+\\)"  ; 1. file path
           "\\("                    ; 2. optional
           ":"
-          "\\([A-ZA-Z0-9_./-]+\\)" ; 3. extract path
+          "\\([A-Za-z0-9_./-]+\\)" ; 3. extract path
           "\\)?"
           "$"))
 
