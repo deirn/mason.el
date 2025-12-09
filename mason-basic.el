@@ -38,6 +38,13 @@
   "If not nil, only print messages what mason would do."
   :type 'boolean :group 'mason)
 
+(defcustom mason-log-to-message t
+  "Whether to also append log messages to *Messages* buffer."
+  :group 'mason
+  :type '(choice (const :tag "Yes, append to *Messages*" t)
+                 (const :tag "Only print to echo area" echo)
+                 (const :tag "Don't print anything" nil)) )
+
 
 ;; Macros
 
@@ -88,20 +95,24 @@
 (defun mason--echo (format &rest args)
   "Add message FORMAT ARGS to echo area."
   (let ((message-log-max nil))
-    (message format args)))
+    (apply #'message format args)))
 
 (defvar mason--log-full-message nil)
 
 (defun mason--log (face prefix format args)
   "Log with FACE, PREFIX, FORMAT, and ARGS."
-  (let* ((formatted (apply #'format-message format args))
+  (let* ((message-fn (cond ((eq mason-log-to-message t)     #'message)
+                           ((eq mason-log-to-message 'echo) #'mason--echo)
+                           (t nil)))
+         (formatted (apply #'format-message format args))
          (ins (concat
                (propertize (format-time-string "[%F %T] ") 'face 'mason-log-time)
                (when mason-dry-run (propertize "[DRY] " 'face 'mason-log-time))
                (propertize (concat prefix formatted) 'face face))))
-    (if mason--log-full-message
-        (message "%s" ins)
-      (message "%s" formatted))
+    (when message-fn
+      (if mason--log-full-message
+          (funcall message-fn "%s" ins)
+        (funcall message-fn "%s" formatted)))
     (when (and mason--log-pkg (not mason-dry-run))
       (puthash mason--log-pkg
                (cons ins (gethash mason--log-pkg mason--log))
