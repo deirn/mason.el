@@ -269,15 +269,24 @@ To be used with `mason--process' and `mason--process-sync'."
 
 (defun mason--update-target (then)
   "Update target and call THEN."
-  (let ((output ""))
-    (mason--process
-      (mason--emacs-cmd '(message "%S" (mason--get-target)))
-      :filter (lambda (_ o) (setq output (concat output o)))
-      :then
-      (lambda (success)
-        (if (not success) (error "Updating target failed")
-          (setq mason--target (read output))
-          (funcall then))))))
+  (let* ((reg-dir (mason--expand-child-file-name "registry" mason-dir))
+         (out-file (mason--expand-child-file-name "target" reg-dir))
+         output)
+    (when (file-exists-p out-file)
+      (setq mason--target (ignore-errors (mason--read-data out-file))))
+    (if (not (null mason--target))
+        (funcall then)
+      (mason--process
+        (mason--emacs-cmd '(message "%S" (mason--get-target)))
+        :filter (lambda (_ o) (setq output (concat output o)))
+        :then
+        (lambda (success)
+          (if (not success) (error "Updating target failed")
+            (setq mason--target (read output))
+            (make-directory reg-dir t)
+            (with-temp-file out-file
+              (insert output))
+            (funcall then)))))))
 
 (defun mason--target-match (str)
   "Return non nil when target STR matches current target."

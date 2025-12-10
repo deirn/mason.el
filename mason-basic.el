@@ -262,14 +262,14 @@ Also returns non nil if `system-type' is cygwin when CYGWIN param is non nil."
                 ((eq system-type 'gnu/linux) '("linux" "unix"))
                 ((eq system-type 'darwin) '("darwin" "unix"))
                 (t '("unix")))
-            arch (let ((uname (string-trim (shell-command-to-string "uname -m 2>/dev/null || true"))))
+            arch (when-let* ((uname (ignore-errors (string-trim (car (process-lines "uname" "-m"))))))
                    (cond
                     ((string-match-p (rx bow (or "x86_64" "amd64" "x64" "x86-64") eow) uname) "x64")
                     ((string-match-p (rx bow (or "aarch64" "arm64") eow) uname) "arm64")
                     ((string-match-p (rx bow (or "armv[0-9]+" "armv[0-9]+l" "arm" "armhf" "armel") eow) uname) "arm32")
                     ((string-match-p (rx bow (or "x86" "i386" "i686") eow) uname) "x86")
                     (t nil)))
-            libc (let ((ldd (shell-command-to-string "ldd --version 2>&1 || true")))
+            libc (when-let* ((ldd (ignore-errors (car (process-lines "ldd" "--version")))))
                    (cond
                     ((string-match-p "musl" ldd) "musl")
                     ((string-match-p (rx (or "GNU libc" "glibc" "GNU C Library")) ldd) "gnu")
