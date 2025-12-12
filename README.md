@@ -5,8 +5,17 @@ inspired by [mason.nvim](https://github.com/mason-org/mason.nvim).
 
 Package registry at [mason-org/mason-registry](https://github.com/mason-org/mason-registry).
 
-- Run `M-x mason-install RET` to install packages.
-- Run `M-x mason-manager RET` to open package manager.
+- `M-x mason-install RET` to install packages.
+- `M-x mason-manager RET` to open package manager.
+
+## Screenshots
+|                                             |                                           |
+|:-------------------------------------------:|:-----------------------------------------:|
+| ![Mason manager](docs/Screenshot-1.png)     | ![Package info](docs/Screenshot-2.png)    |
+| `mason-manager`                             | Package info                              |
+| ![M-x mason-install](docs/Screenshot-3.png) | ![`M-x mason-log`](docs/Screenshot-4.png) |
+| `mason-install`                             | `mason-log`                               |
+|                                             |                                           |
 
 ## Requirements
 mason.el will call external programs such as `cargo` and `npm` to install the packages,
@@ -23,29 +32,31 @@ and call `(mason-ensure)` to setup the environment.
 (use-package mason
   :ensure t
   :config
-  (mason-ensure)
-  ;; or
-  :hook
-  (after-init-hook . mason-ensure))
+  (mason-ensure))
+```
+
+### Install it in [Doom Emacs](https://github.com/doomemacs/doomemacs):
+Add to `DOOMDIR/packages.el`:
+``` emacs-lisp
+(package! mason)
+```
+
+Add to `DOOMDIR/config.el`:
+``` emacs-lisp
+(use-package! mason
+  :config
+  (mason-ensure))
 ```
 
 ## Snippets
+
 ### Programmatically installing packages
 mason.el can be used to install packages programmatically:
 ``` emacs-lisp
 (mason-ensure
  (lambda ()
-   (ignore-errors (mason-install "basedpyright"))
-   (ignore-errors (mason-install "jdtls"))
-   (ignore-errors (mason-install "clangd"))))
+   (dolist (pkg '("basedpyright" "jdtls" "clangd"))
+     (unless (mason-installed-p pkg)
+       (ignore-errors (mason-install pkg))))))
 ```
-This will install the missing packages.
-
-## Screenshots
-|                                             |                                           |
-|:-------------------------------------------:|:-----------------------------------------:|
-| ![Mason manager](docs/Screenshot-1.png)     | ![Package info](docs/Screenshot-2.png)    |
-| `mason-manager`                             | Package info                              |
-| ![M-x mason-install](docs/Screenshot-3.png) | ![`M-x mason-log`](docs/Screenshot-4.png) |
-| `mason-install`                             | `mason-log`                               |
-|                                             |                                           |
+This will (try to) install the missing packages.

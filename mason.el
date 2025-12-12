@@ -1420,6 +1420,12 @@ Call CALLBACK with the selected package spec."
        ,@body)))
 
 ;;;###autoload
+(defun mason-installed-p (package)
+  "Checks if PACKAGE is already installed."
+  (mason--assert-ensured)
+  (when (gethash package mason--installed) t))
+
+;;;###autoload
 (defun mason-install (package &optional force interactive callback)
   "Install a Mason PACKAGE.
 If FORCE non nil delete existing installation, if exists.
