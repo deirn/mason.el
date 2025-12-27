@@ -1137,7 +1137,7 @@ WIN-EXT is the extension to add when on windows."
   (when (or (eq mason--registry 'nan)
             (eq mason--installed 'nan)
             (eq mason--updatable 'nan))
-    (error "Call `mason-ensure' on your init.el"))
+    (error "Call `mason-setup' on your init.el"))
   (when (or (eq mason--registry 'on-process)
             (eq mason--installed 'on-process)
             (eq mason--updatable 'on-process))
