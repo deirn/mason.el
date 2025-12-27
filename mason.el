@@ -29,7 +29,6 @@
 
 ;;; Code:
 
-(require 'ansi-color)
 (require 'cl-lib)
 (require 'json)
 (require 'seq)
@@ -1144,6 +1143,12 @@ WIN-EXT is the extension to add when on windows."
             (eq mason--updatable 'on-process))
     (error "Mason is not ready yet")))
 
+(defun mason--ensured-p ()
+  "Returns t if Mason is already setup."
+  (ignore-errors
+    (mason--assert-ensured)
+    t))
+
 (defvar mason--package-list nil)
 (defun mason--get-package-list ()
   "Get list of mason packages."
@@ -1262,9 +1267,15 @@ WIN-EXT is the extension to add when on windows."
                (funcall callback)))))))))
 
 ;;;###autoload
-(defun mason-ensure (&optional callback)
-  "Ensure mason is setup.
-Call CALLBACK if it succeeded."
+(cl-defun mason-ensure (&optional callback)
+  "Ensure Mason is setup.
+Call CALLBACK function after setup succeeded or if it already been setup before.
+
+See `mason-setup' for the macro version of this function."
+  (when (mason--ensured-p)
+    (when (functionp callback)
+      (funcall callback))
+    (cl-return-from mason-ensure))
   (let* ((bin-dir (mason--expand-child-file-name "bin" mason-dir))
          (reg-index (mason--expand-child-file-name "registry/index" mason-dir))
          (reg-time (file-attribute-modification-time (file-attributes reg-index)))
@@ -1284,6 +1295,14 @@ Call CALLBACK if it succeeded."
            (mason--info "Mason ready")
            (when (functionp callback)
              (funcall callback))))))))
+
+;;;###autoload
+(defmacro mason-setup (&rest body)
+  "Setup Mason, then run BODY after it succeeded.
+See `mason-ensure' for the function version of this macro."
+  (declare (indent defun))
+  (if body `(mason-ensure (lambda () ,@body))
+    `(mason-ensure)))
 
 (defvar mason--ask-package-prompt nil)
 (defvar mason--ask-package-callback nil)

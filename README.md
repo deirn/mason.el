@@ -25,14 +25,14 @@ Call `(mason-doctor)` to see the requirements of each package type.
 
 ## Installation
 mason.el is available on [MELPA](https://melpa.org/#/mason), install it in your favorite way
-and call `(mason-ensure)` to setup the environment.
+and call `(mason-setup)` to setup the environment.
 
 ### Install it with `use-package`
 ``` emacs-lisp
 (use-package mason
   :ensure t
   :config
-  (mason-ensure))
+  (mason-setup))
 ```
 
 ### Install it in [Doom Emacs](https://github.com/doomemacs/doomemacs):
@@ -45,7 +45,7 @@ Add to `DOOMDIR/config.el`:
 ``` emacs-lisp
 (use-package! mason
   :config
-  (mason-ensure))
+  (mason-setup))
 ```
 
 ## Snippets
@@ -53,10 +53,9 @@ Add to `DOOMDIR/config.el`:
 ### Programmatically installing packages
 mason.el can be used to install packages programmatically:
 ``` emacs-lisp
-(mason-ensure
- (lambda ()
-   (dolist (pkg '("basedpyright" "jdtls" "clangd"))
-     (unless (mason-installed-p pkg)
-       (ignore-errors (mason-install pkg))))))
+(mason-setup
+  (dolist (pkg '("basedpyright" "jdtls" "clangd"))
+    (unless (mason-installed-p pkg)
+      (ignore-errors (mason-install pkg)))))
 ```
 This will (try to) install the missing packages.

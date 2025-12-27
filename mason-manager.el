@@ -318,7 +318,7 @@ T-INSTALLED T-UPDATABLE T-UNINSTALLED T-PENDING T-DEPRECATED."
                     (source-id (gethash "id" source))
                     (purl (mason--parse-purl source-id))
                     (version (gethash "version" purl))
-                    (version (if (not (string-match (rx bol (literal name) (any "/@-") (group (+ any)) eol) version)) version
+                    (version (if (not (string-match (rx bol (literal name) (any "/@-") (group (+ anychar)) eol) version)) version
                                (match-string 1 version)))
                     (version (replace-regexp-in-string "^[vV]" "" version))
                     (version (replace-regexp-in-string (rx bol (or "untagged-" "0.0.0-")) "" version))
