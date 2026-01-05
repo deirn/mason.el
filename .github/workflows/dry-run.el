@@ -9,14 +9,21 @@
   (load s)
   (require 'mason)
   (let ((mason--log-full-message t)
-        failed)
+        done failed)
     (mason-ensure
      (lambda ()
-       (mason-dry-run-install-all
-        (lambda (success total)
+       (mason-dry-run-install-all2
+        (lambda (success total failed-pkgs)
           (delete-file s)
-          (setq failed (- total success))))))
-    (while (null failed)
+          (setq done t
+                failed failed-pkgs)))))
+    (while (not done)
       (accept-process-output nil 0 1))
-    (if (> failed 0) (error "Failed")
-      (message "Success"))))
+    (unless (null failed)
+      (let ((only-unsupported t))
+        (dolist (pkg failed)
+          (if (mason--source-supported-p pkg)
+              (setq only-unsupported nil)
+            (message "Package `%s' is unsupported for current platform" pkg)))
+        (unless only-unsupported
+          (error "Failed"))))))

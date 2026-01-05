@@ -636,9 +636,48 @@ See `mason--proc-to-sexp' for TRANSFORMER."
     (or tree "")))
 
 
+;; Global State
+
+(defvar mason--registry 'nan)
+(defvar mason--installed 'nan)
+(defvar mason--updatable 'nan)
+(defvar mason--pending (mason--make-hash))
+
+(defun mason--assert-ensured ()
+  "Assert if `mason--registry' is available."
+  (when (or (eq mason--registry 'nan)
+            (eq mason--installed 'nan)
+            (eq mason--updatable 'nan))
+    (error "Call `mason-setup' on your init.el"))
+  (when (or (eq mason--registry 'on-process)
+            (eq mason--installed 'on-process)
+            (eq mason--updatable 'on-process))
+    (error "Mason is not ready yet")))
+
+(defun mason--ensured-p ()
+  "Returns t if Mason is already setup."
+  (ignore-errors
+    (mason--assert-ensured)
+    t))
+
+
 ;; Source Resolvers
 
 (defconst mason--source-requirements nil)
+
+(defun mason--assert-source-supported (package &optional source)
+  "Errors if PACKAGE SOURCE doesn't support current platform."
+  (let* ((source (or source (gethash "source" (gethash package mason--registry))))
+         (platforms (gethash "supported_platforms" source)))
+    (when platforms
+      (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
+        (error "Package `%s' only supports platforms `%s'" package (json-serialize platforms))))))
+
+(defun mason--source-supported-p (package &optional source)
+  "Returns t if PACKAGE SOURCE supports current running platform."
+  (ignore-errors
+    (mason--assert-source-supported package source)
+    t))
 
 (cl-defmacro mason--source! (type
                              (&key (req         nil)
@@ -736,10 +775,7 @@ Inside BODY, one can reference:
            (ignore name id source spec m-qualifiers
                    id-raw id-scheme id-type id-namespace id-name id-version id-qualifiers id-subpath)
            (remhash "version_overrides" source)
-           (let ((platforms (gethash "supported_platforms" source)))
-             (when platforms
-               (unless (seq-some (lambda (x) (mason--target-match x)) platforms)
-                 (error "Package `%s' only supports platforms `%s'" name (json-serialize platforms)))))
+           (mason--assert-source-supported name source)
            ,p-namespace
            ,p-version
            ,p-subpath
@@ -1126,28 +1162,6 @@ WIN-EXT is the extension to add when on windows."
 
 
 ;; The Installer
-
-(defvar mason--registry 'nan)
-(defvar mason--installed 'nan)
-(defvar mason--updatable 'nan)
-(defvar mason--pending (mason--make-hash))
-
-(defun mason--assert-ensured ()
-  "Assert if `mason--registry' is available."
-  (when (or (eq mason--registry 'nan)
-            (eq mason--installed 'nan)
-            (eq mason--updatable 'nan))
-    (error "Call `mason-setup' on your init.el"))
-  (when (or (eq mason--registry 'on-process)
-            (eq mason--installed 'on-process)
-            (eq mason--updatable 'on-process))
-    (error "Mason is not ready yet")))
-
-(defun mason--ensured-p ()
-  "Returns t if Mason is already setup."
-  (ignore-errors
-    (mason--assert-ensured)
-    t))
 
 (defvar mason--package-list nil)
 (defun mason--get-package-list ()
@@ -1655,7 +1669,16 @@ Expand TABLE from SPEC-ID-CTX and SOURCE-ID, if necessary."
 
 (defun mason-dry-run-install-all (&optional callback)
   "Dry run install all packages.
-Call CALLBACK with success and total packages."
+Call CALLBACK with success count and total packages count."
+  (if (functionp callback)
+      (mason-dry-run-install-all2 (lambda (success total _)
+                                    (funcall callback success total)))
+    (mason-dry-run-install-all2)))
+
+(defun mason-dry-run-install-all2 (&optional callback)
+  "Dry run install all packages.
+Call CALLBACK with success count, total packages count,
+and failed packages list."
   (let* ((prev-dry-run mason-dry-run)
          (prev-mason-dir mason-dir)
          (packages (mason--get-package-list))
@@ -1685,15 +1708,16 @@ Call CALLBACK with success and total packages."
                             (run-at-time
                              0 nil (lambda ()
                                      (funcall installer s)))))
+         (setq failed (reverse failed))
          (mason--info "Installed %d/%d packages, failed packages\n%s%S"
                       success-count total-count
-                      (s-repeat 8 " ") (nreverse failed))
+                      (s-repeat 8 " ") failed)
          (delete-directory mason-dir)
          (setq mason-dry-run prev-dry-run
                mason-dir prev-mason-dir)
          (mason-ensure)
          (when (functionp callback)
-           (funcall callback success-count total-count)))))
+           (funcall callback success-count total-count failed)))))
     (funcall installer nil)
     t))
 
