@@ -9,6 +9,7 @@
   (load s)
   (require 'mason)
   (let ((mason--log-full-message t)
+        (mason--log-save-on-dry-run t)
         done failed)
     (mason-ensure
      (lambda ()
@@ -22,8 +23,18 @@
     (unless (null failed)
       (let ((only-unsupported t))
         (dolist (pkg failed)
-          (if (mason--source-supported-p pkg)
-              (setq only-unsupported nil)
-            (message "Package `%s' is unsupported for current platform" pkg)))
+          (let* ((log (gethash pkg mason--log))
+                 (log0 (nth 0 log))
+                 (log1 (nth 1 log)))
+            (unless log
+              (error "No logs for `%s'" pkg))
+            (unless (string-match-p "^\\[[0-9 :-]+\\] \\[DRY\\] ERROR: Installation of .* failed$" log0)
+              (error "Unexpected log for `%s': %s" pkg log0))
+            (cond
+             ((string-match-p "^\\[[0-9 :-]+\\] \\[DRY\\] ERROR: Package .* only supports platforms .*$" log1)
+              (message "`%s' doesn't have the current platform in `supported_platforms'" pkg))
+             ((string-match-p "^\\[[0-9 :-]+\\] \\[DRY\\] ERROR: No matching .* for target .*$" log1)
+              (message "`%s' doesn't have the current platform in `target'" pkg))
+             (t (error "Unexpected log for `%s': %s" pkg log1)))))
         (unless only-unsupported
           (error "Failed"))))))

@@ -98,6 +98,7 @@
     (apply #'message format args)))
 
 (defvar mason--log-full-message nil)
+(defvar mason--log-save-on-dry-run nil)
 
 (defun mason--log (face prefix format args)
   "Log with FACE, PREFIX, FORMAT, and ARGS."
@@ -113,7 +114,9 @@
       (if mason--log-full-message
           (funcall message-fn "%s" ins)
         (funcall message-fn "%s" formatted)))
-    (when (and mason--log-pkg (not mason-dry-run))
+    (when (and mason--log-pkg
+               (or (not mason-dry-run)
+                   mason--log-save-on-dry-run))
       (puthash mason--log-pkg
                (cons ins (gethash mason--log-pkg mason--log))
                mason--log))

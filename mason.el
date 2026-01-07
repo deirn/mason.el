@@ -1006,7 +1006,7 @@ Expand BUILD[env] with ID."
         (has-build (gethash "build" source)))
     (cond
      ((and has-download has-build)
-      (error "Source `%s' has both `asset' and `build' recipe" id-raw))
+      (error "Source `%s' has both `download' and `build' recipe" id-raw))
      (has-download
       (let* ((download (mason--source-target source "download"))
              (files (gethash "files" download))
