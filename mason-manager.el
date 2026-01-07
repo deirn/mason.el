@@ -333,6 +333,8 @@ T-INSTALLED T-UPDATABLE T-UNINSTALLED T-PENDING T-DEPRECATED."
                                 (or (eq 'show t-deprecated) (null deprecation))
                                 (or (string= f-category "All") (seq-contains-p categories f-category))
                                 (or (string= f-language "All") (seq-contains-p languages f-language)))))
+                 (when (and deprecation installed (eq 'show t-installed))
+                   (setq show t))
                  (when show
                    (let ((row (vector name version description "")))
                      (puthash name row mason-manager--rows)

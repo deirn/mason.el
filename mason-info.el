@@ -156,8 +156,9 @@ If INTERACTIVE, ask for PACKAGE."
           (insert (propertize "installed spec" 'face 'mason-info-subheader) ?\n)
           (mason-info--json installed)
           (insert "\n\n"))
-        (insert (propertize "spec" 'face 'mason-info-subheader) ?\n)
-        (mason-info--json spec))
+        (when registry
+          (insert (propertize "spec" 'face 'mason-info-subheader) ?\n)
+          (mason-info--json spec)))
        (t
         (insert
          (propertize name 'face 'mason-info-header) ?\n
@@ -169,7 +170,7 @@ If INTERACTIVE, ask for PACKAGE."
            deprecation-message ?\n
            ?\n))
         (insert
-         (mason--info-section "registry  : ") registry ?\n
+         (mason--info-section "registry  : ") (or registry (propertize "not in any registry" 'face 'mason-log-error)) ?\n
          (mason--info-section "homepage  : ") (buttonize homepage #'browse-url homepage) ?\n
          (mason--info-section "licenses  : ") (mapconcat #'identity licenses ", ") ?\n
          (mason--info-section "languages : ") (mapconcat #'identity languages ", ") ?\n
@@ -179,10 +180,12 @@ If INTERACTIVE, ask for PACKAGE."
           (insert (propertize "installed recipe" 'face 'mason-info-subheader) ?\n)
           (mason-info--spec installed)
           (insert "\n\n"))
-        (insert (propertize "recipe" 'face 'mason-info-subheader) ?\n)
-        (mason-info--spec spec)
+        (when registry
+          (insert (propertize "recipe" 'face 'mason-info-subheader) ?\n)
+          (mason-info--spec spec)
+          (insert "\n\n"))
         (when log
-          (insert "\n\n" (propertize "logs" 'face 'mason-info-subheader))
+          (insert (propertize "logs" 'face 'mason-info-subheader))
           (dolist (l (reverse log))
             (insert ?\n l)))
         (insert ?\n)))

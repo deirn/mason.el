@@ -1206,9 +1206,29 @@ WIN-EXT is the extension to add when on windows."
 
 (defun mason--update-installed ()
   "Update `mason--installed'."
-  (let ((installed-index (mason--expand-child-file-name "packages/index" mason-dir)))
+  (let ((installed-index (mason--expand-child-file-name "packages/index" mason-dir))
+        resort)
     (setq mason--installed (or (mason--read-data installed-index)
-                               (mason--make-hash)))))
+                               (mason--make-hash)))
+    (maphash (lambda (key spec)
+               (unless (gethash key mason--registry)
+                 (puthash key spec mason--registry)
+                 (puthash "registry" nil spec)
+                 (unless (gethash "deprecation" spec)
+                   (puthash "deprecation"
+                            (mason--make-hash
+                              "message" "No longer in any registry"
+                              "since" "v0")
+                            spec))
+                 (setq resort t)))
+             mason--installed)
+    (when resort
+      (let* ((keys (mason--hash-keys mason--registry))
+             (keys (sort keys #'string<))
+             (reg-sorted (mason--make-hash)))
+        (dolist (key keys)
+          (puthash key (gethash key mason--registry) reg-sorted))
+        (setq mason--registry reg-sorted)))))
 
 (defun mason--update-updatable1 (spec)
   "Add SPEC to `mason--updatable' if it is updatable."
@@ -1242,9 +1262,9 @@ WIN-EXT is the extension to add when on windows."
         mason--language-list nil)
   (mason--update-target
    (lambda ()
-     (mason--update-installed)
      (let* ((reg-dir (mason--expand-child-file-name "registry" mason-dir))
-            (reg-index (mason--expand-child-file-name "index" reg-dir)))
+            (reg-index (mason--expand-child-file-name "index" reg-dir))
+            (reg-last (mason--read-data reg-index)))
        (mason--process
          (mason--emacs-cmd
            `(let ((reg (mason--make-hash))
@@ -1272,13 +1292,23 @@ WIN-EXT is the extension to add when on windows."
                 (prin1 reg (current-buffer)))))
          :then
          (lambda (success)
-           (if (not success) (error "Error downloading registry")
-             (setq mason--registry (or (mason--read-data reg-index)
-                                       (mason--make-hash)))
-             (mason--update-updatable)
+           (cond
+            (success
              (mason--success "Mason registry updated")
-             (when (functionp callback)
-               (funcall callback)))))))))
+             (setq mason--registry (or (mason--read-data reg-index)
+                                       (mason--make-hash))))
+            (reg-last
+             (mason--warn "Failed on updating registry, fallback to the old one...")
+             (setq mason--registry reg-last)
+             (make-directory reg-dir t)
+             (with-temp-file reg-index
+               (prin1 reg-last (current-buffer))))
+            (t
+             (error "Unrecoverable error when downloading the registry")))
+           (mason--update-installed)
+           (mason--update-updatable)
+           (when (functionp callback)
+             (funcall callback))))))))
 
 ;;;###autoload
 (cl-defun mason-ensure (&optional callback)
@@ -1303,8 +1333,8 @@ See `mason-setup' for the macro version of this function."
           (mason-update-registry callback)
         (mason--update-target
          (lambda ()
-           (mason--update-installed)
            (setq mason--registry (mason--read-data reg-index))
+           (mason--update-installed)
            (mason--update-updatable)
            (mason--info "Mason ready")
            (when (functionp callback)
